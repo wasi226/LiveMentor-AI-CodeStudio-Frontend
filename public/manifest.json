@@ -1,0 +1,19 @@
+{
+  "name": "liveMentor AI CodeStudio",
+  "short_name": "liveMentor",
+  "description": "Interactive AI-powered coding education platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#3b82f6",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "vite.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "categories": ["education", "productivity"],
+  "lang": "en"
+}

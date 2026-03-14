@@ -1,0 +1,60 @@
+{
+  "name": "Classroom",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Name of the classroom"
+    },
+    "description": {
+      "type": "string",
+      "description": "Description of the classroom"
+    },
+    "code": {
+      "type": "string",
+      "description": "Unique join code for the classroom"
+    },
+    "language": {
+      "type": "string",
+      "enum": [
+        "javascript",
+        "python",
+        "java",
+        "cpp",
+        "typescript",
+        "go",
+        "rust"
+      ],
+      "default": "javascript"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "archived",
+        "scheduled"
+      ],
+      "default": "active"
+    },
+    "faculty_email": {
+      "type": "string",
+      "description": "Email of the faculty who created the classroom"
+    },
+    "student_emails": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of student emails in the classroom"
+    },
+    "max_students": {
+      "type": "number",
+      "default": 30
+    }
+  },
+  "required": [
+    "name",
+    "code",
+    "faculty_email"
+  ]
+}

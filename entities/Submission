@@ -1,0 +1,45 @@
+{
+  "name": "Submission",
+  "type": "object",
+  "properties": {
+    "assignment_id": {
+      "type": "string"
+    },
+    "classroom_id": {
+      "type": "string"
+    },
+    "student_email": {
+      "type": "string"
+    },
+    "code": {
+      "type": "string"
+    },
+    "language": {
+      "type": "string"
+    },
+    "score": {
+      "type": "number",
+      "description": "Score out of 100"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "submitted",
+        "graded",
+        "in_progress"
+      ],
+      "default": "submitted"
+    },
+    "feedback": {
+      "type": "string"
+    },
+    "error_count": {
+      "type": "number",
+      "default": 0
+    }
+  },
+  "required": [
+    "assignment_id",
+    "student_email"
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "name": "Assignment",
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "classroom_id": {
+      "type": "string",
+      "description": "ID of the classroom this assignment belongs to"
+    },
+    "language": {
+      "type": "string",
+      "enum": [
+        "javascript",
+        "python",
+        "java",
+        "cpp",
+        "typescript",
+        "go",
+        "rust"
+      ],
+      "default": "javascript"
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": [
+        "easy",
+        "medium",
+        "hard"
+      ],
+      "default": "medium"
+    },
+    "due_date": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "starter_code": {
+      "type": "string"
+    },
+    "test_cases": {
+      "type": "string",
+      "description": "JSON string of test cases"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "published",
+        "closed"
+      ],
+      "default": "draft"
+    },
+    "faculty_email": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "classroom_id"
+  ]
+}
