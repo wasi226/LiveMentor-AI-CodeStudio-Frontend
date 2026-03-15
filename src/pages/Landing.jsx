@@ -4,7 +4,7 @@ import { motion, useScroll, useTransform, AnimatePresence } from 'framer-motion'
 import {
   Terminal, Code2, Users, Sparkles, ArrowRight, Play,
   Github, Twitter, Globe, Brain, BarChart3, Layers, Cpu,
-  ChevronRight, Zap, CheckCircle, Shield, Star
+  ChevronRight, Zap, CheckCircle, Shield, Star, Menu, X
 } from 'lucide-react';
 
 /* ─── DATA ─────────────────────────────────────── */
@@ -72,15 +72,29 @@ function FloatingOrb({ style }) {
 /* ─── MAIN COMPONENT ────────────────────────────── */
 export default function Landing() {
   const [activeTestimonial, setActiveTestimonial] = useState(0);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const heroRef = useRef(null);
   const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
   const heroY = useTransform(scrollYProgress, [0, 1], ['0%', '20%']);
   const heroOpacity = useTransform(scrollYProgress, [0, 0.7], [1, 0]);
 
+  const navItems = ['Features', 'Preview', 'Testimonials'];
+
   // Auto-cycle testimonials
   useEffect(() => {
     const t = setInterval(() => setActiveTestimonial(p => (p + 1) % testimonials.length), 4000);
     return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth >= 768) {
+        setMobileMenuOpen(false);
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   return (
@@ -89,16 +103,16 @@ export default function Landing() {
       {/* ── NAVBAR ── */}
       <nav className="fixed top-0 w-full z-50">
         <div className="absolute inset-0 bg-[#04080f]/80 backdrop-blur-xl border-b border-white/5" />
-        <div className="relative max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+        <div className="relative max-w-6xl mx-auto px-4 sm:px-6 h-14 sm:h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
               <Terminal style={{ width: 15, height: 15 }} className="text-white" />
             </div>
-            <span className="text-[16px] font-black tracking-tight">CodeClass<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400">.ai</span></span>
+            <span className="text-[14px] sm:text-[16px] font-black tracking-tight truncate">CodeClass<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400">.ai</span></span>
           </div>
 
           <div className="hidden md:flex items-center gap-8">
-            {['Features', 'Preview', 'Testimonials'].map(item => (
+            {navItems.map(item => (
               <a key={item} href={`#${item.toLowerCase()}`}
                 className="text-[13px] text-slate-500 hover:text-white transition-colors duration-200 font-medium">
                 {item}
@@ -106,7 +120,7 @@ export default function Landing() {
             ))}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="hidden md:flex items-center gap-2">
             <Link to="/role-selection">
               <button className="text-[13px] text-slate-400 hover:text-white transition-colors px-4 py-2 font-medium">Log In</button>
             </Link>
@@ -118,7 +132,55 @@ export default function Landing() {
               </button>
             </Link>
           </div>
+
+          <button
+            onClick={() => setMobileMenuOpen((prev) => !prev)}
+            className="md:hidden w-9 h-9 rounded-lg border border-slate-800/80 bg-slate-900/50 text-slate-300 hover:text-white hover:bg-slate-800/70 transition-colors flex items-center justify-center"
+            aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+          >
+            {mobileMenuOpen ? <X style={{ width: 16, height: 16 }} /> : <Menu style={{ width: 16, height: 16 }} />}
+          </button>
         </div>
+
+        <AnimatePresence>
+          {mobileMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              transition={{ duration: 0.18 }}
+              className="md:hidden relative border-t border-white/5 bg-[#070d18]/95 backdrop-blur-xl"
+            >
+              <div className="px-4 py-3 space-y-3">
+                <div className="flex flex-col gap-1.5">
+                  {navItems.map((item) => (
+                    <a
+                      key={item}
+                      href={`#${item.toLowerCase()}`}
+                      onClick={() => setMobileMenuOpen(false)}
+                      className="text-[13px] text-slate-300 hover:text-white px-2 py-2 rounded-lg hover:bg-slate-800/60 transition-colors"
+                    >
+                      {item}
+                    </a>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <Link to="/role-selection" onClick={() => setMobileMenuOpen(false)}>
+                    <button className="w-full h-9 text-[13px] text-slate-300 bg-slate-900/70 border border-slate-800/70 rounded-lg hover:bg-slate-800 transition-colors font-medium">
+                      Log In
+                    </button>
+                  </Link>
+                  <Link to="/role-selection" onClick={() => setMobileMenuOpen(false)}>
+                    <button className="w-full h-9 text-[13px] text-white rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 font-semibold">
+                      Get Started
+                    </button>
+                  </Link>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </nav>
 
       {/* ── HERO ── */}

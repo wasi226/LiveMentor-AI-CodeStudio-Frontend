@@ -113,9 +113,9 @@ export default function Analytics() {
     <div className="min-h-screen bg-slate-950">
       <TopBar user={user} title="Analytics" subtitle="Performance insights & trends" />
 
-      <main className="p-6 max-w-7xl mx-auto space-y-6">
+      <main className="p-3 sm:p-4 lg:p-6 max-w-7xl mx-auto space-y-6">
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard title="Avg Score" value={`${avgScore}%`} icon={TrendingUp} color="indigo" delay={0} subtitle="+6% this month" trend="up" />
           <StatCard title="Completion" value={`${completionRate}%`} icon={Target} color="emerald" delay={0.05} subtitle="Assignment rate" trend="up" />
           <StatCard title="Submissions" value={submissions.length || 42} icon={CheckCircle2} color="violet" delay={0.1} subtitle="This semester" />

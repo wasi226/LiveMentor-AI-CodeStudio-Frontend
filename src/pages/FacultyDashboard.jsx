@@ -157,7 +157,7 @@ export default function FacultyDashboard() {
         title={`Faculty Dashboard - ${user?.full_name || 'Professor'}`}
         subtitle={`Welcome, ${user?.full_name || 'Professor'}`}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             <Dialog open={dialogOpen} onOpenChange={(open) => {
               setDialogOpen(open);
               if (!open) {
@@ -165,9 +165,9 @@ export default function FacultyDashboard() {
               }
             }}>
               <DialogTrigger asChild>
-                <Button size="sm" className="bg-indigo-600 hover:bg-indigo-500 h-8 text-[12px] px-3 gap-1.5">
+                <Button size="sm" className="bg-indigo-600 hover:bg-indigo-500 h-8 text-[12px] px-2 sm:px-3 gap-1.5">
                   <Plus style={{ width: 13, height: 13 }} />
-                  New Classroom
+                  <span className="hidden sm:inline">New Classroom</span>
                 </Button>
               </DialogTrigger>
               <DialogContent className="bg-[#0d1117] border-slate-800 text-white max-w-sm">
@@ -224,18 +224,18 @@ export default function FacultyDashboard() {
               size="sm"
               variant="outline"
               onClick={handleLogout}
-              className="h-8 text-[12px] px-3 gap-1.5 border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-600 hover:border-rose-500 hover:text-white transition-colors"
+              className="h-8 text-[12px] px-2 sm:px-3 gap-1.5 border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-600 hover:border-rose-500 hover:text-white transition-colors"
             >
               <LogOut style={{ width: 13, height: 13 }} />
-              Logout
+              <span className="hidden sm:inline">Logout</span>
             </Button>
           </div>
         }
       />
 
-      <main className="p-6 max-w-7xl mx-auto space-y-6">
+      <main className="p-3 sm:p-4 lg:p-6 max-w-7xl mx-auto space-y-6">
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <StatCard title="Classrooms" value={classrooms.length} icon={BookOpen} color="indigo" delay={0} subtitle="Total active" />
           <StatCard title="Students" value={totalStudents} icon={Users} color="violet" delay={0.05} subtitle="Enrolled" />
           <StatCard title="Avg Score" value={avgScore > 0 ? `${avgScore}%` : '—'} icon={TrendingUp} color="emerald" delay={0.1} subtitle="Class average" />
@@ -265,7 +265,7 @@ export default function FacultyDashboard() {
                 </div>
                 <div className="divide-y divide-slate-800/40">
                   {classrooms.map(c => (
-                    <div key={c.id} className="flex items-center justify-between px-4 py-3 hover:bg-slate-800/20 transition-colors">
+                    <div key={c.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-3 hover:bg-slate-800/20 transition-colors">
                       <div className="flex items-center gap-3">
                         <div className="w-7 h-7 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center">
                           <BookOpen style={{ width: 12, height: 12 }} className={langColors[c.language] || 'text-slate-500'} />
@@ -275,8 +275,8 @@ export default function FacultyDashboard() {
                           <p className="text-[10px] text-slate-600">{c.student_emails?.length || 0} students</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-[12px] font-mono font-bold text-indigo-400 bg-indigo-500/8 border border-indigo-500/15 px-2.5 py-1 rounded-md">{c.code}</span>
+                      <div className="flex items-center gap-2.5 self-end sm:self-auto">
+                        <span className="text-[11px] sm:text-[12px] font-mono font-bold text-indigo-400 bg-indigo-500/8 border border-indigo-500/15 px-2.5 py-1 rounded-md">{c.code}</span>
                         <button
                           onClick={() => copyCode(c.code)}
                           className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-white hover:bg-slate-800 transition-colors"

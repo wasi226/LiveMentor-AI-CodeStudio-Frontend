@@ -28,11 +28,13 @@ export default function Classroom() {
   const [submitted, setSubmitted] = useState(false);
   const [remoteUsers, setRemoteUsers] = useState(new Map());
   const [codeCursors, setCodeCursors] = useState(new Map());
+  const [isMobileLayout, setIsMobileLayout] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 1024 : false));
   
   const queryClient = useQueryClient();
   const codeChangeTimeout = useRef(null);
   const lastCodeSync = useRef('');
   const autoSaveInitialized = useRef(false);
+  const previousMobileState = useRef(isMobileLayout);
   
   // Real-time collaboration
   const { 
@@ -67,6 +69,26 @@ export default function Classroom() {
     enabled: !!classroomId,
     refetchInterval: isConnected ? 1500 : 6000, // Faster when connected
   });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileLayout(window.innerWidth < 1024);
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isMobileLayout !== previousMobileState.current) {
+      setLeftCollapsed(isMobileLayout);
+      previousMobileState.current = isMobileLayout;
+    }
+  }, [isMobileLayout]);
 
   // Connect to collaboration session when user and classroom are ready
   useEffect(() => {
@@ -353,8 +375,8 @@ export default function Classroom() {
   return (
     <div className="h-screen bg-[#0a0f1a] flex flex-col overflow-hidden select-none">
       {/* IDE Title bar */}
-      <div className="h-11 border-b border-slate-800/50 bg-[#070c14] backdrop-blur flex items-center justify-between px-4 flex-shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="h-11 border-b border-slate-800/50 bg-[#070c14] backdrop-blur flex items-center justify-between px-2 sm:px-4 flex-shrink-0 gap-2">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
           <Link
             to="/student-dashboard"
             className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 transition-colors group"
@@ -363,16 +385,16 @@ export default function Classroom() {
             <span className="text-[11px] font-medium hidden sm:block">Back</span>
           </Link>
 
-          <div className="w-px h-4 bg-slate-800" />
+          <div className="w-px h-4 bg-slate-800 hidden sm:block" />
 
-          <div>
-            <h1 className="text-[12px] font-semibold text-slate-200 leading-none">{classroom?.name || 'Loading...'}</h1>
-            <p className="text-[10px] text-slate-600 font-mono mt-0.5">{classroom?.code}</p>
+          <div className="min-w-0">
+            <h1 className="text-[12px] font-semibold text-slate-200 leading-none truncate max-w-[38vw] sm:max-w-none">{classroom?.name || 'Loading...'}</h1>
+            <p className="text-[10px] text-slate-600 font-mono mt-0.5 truncate">{classroom?.code}</p>
           </div>
         </div>
 
         {/* Center: collaborative avatars */}
-        <div className="flex items-center gap-3">
+        <div className="hidden md:flex items-center gap-3">
           <div className="hidden sm:flex -space-x-1.5">
             {participants.slice(0, 5).map((p, i) => (
               <div
@@ -398,7 +420,7 @@ export default function Classroom() {
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0 }}
-            className="flex items-center gap-1.5 text-[11px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-full"
+            className="hidden sm:flex items-center gap-1.5 text-[11px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-full"
           >
             <CheckCircle2 style={{ width: 12, height: 12 }} />
             Submitted!
@@ -407,18 +429,26 @@ export default function Classroom() {
       </div>
 
       {/* IDE body */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
         {/* Left: Participants */}
-        <motion.div
-          animate={{ width: leftCollapsed ? 0 : 200 }}
-          transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-          className="border-r border-slate-800/50 bg-[#070c14] flex-shrink-0 overflow-hidden"
-        >
-          <ParticipantsPanel participants={participants} facultyEmail={classroom?.faculty_email} />
-        </motion.div>
+        {isMobileLayout ? (
+          !leftCollapsed && (
+            <div className="border-b border-slate-800/50 bg-[#070c14] flex-shrink-0 h-44 overflow-hidden">
+              <ParticipantsPanel participants={participants} facultyEmail={classroom?.faculty_email} />
+            </div>
+          )
+        ) : (
+          <motion.div
+            animate={{ width: leftCollapsed ? 0 : 200 }}
+            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+            className="border-r border-slate-800/50 bg-[#070c14] flex-shrink-0 overflow-hidden"
+          >
+            <ParticipantsPanel participants={participants} facultyEmail={classroom?.faculty_email} />
+          </motion.div>
+        )}
 
         {/* Center: Code Editor */}
-        <div className="flex-1 flex flex-col min-w-0 bg-[#0d1117]">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#0d1117]">
           {/* Mini toolbar */}
           <div className="flex items-center gap-1 px-2 py-1.5 border-b border-slate-800/40 bg-slate-950/40 flex-shrink-0">
             <button
@@ -435,7 +465,7 @@ export default function Classroom() {
             <span className="text-[10px] font-mono text-slate-600">main.{language === 'javascript' ? 'js' : language === 'python' ? 'py' : language === 'cpp' ? 'cpp' : language === 'java' ? 'java' : language === 'typescript' ? 'ts' : language === 'go' ? 'go' : 'rs'}</span>
           </div>
 
-          <div className="flex-1 p-3 overflow-hidden">
+          <div className="flex-1 p-2 sm:p-3 overflow-hidden min-h-[260px]">
             <CodeEditor
               language={language}
               onLanguageChange={handleLanguageChange}
@@ -449,31 +479,31 @@ export default function Classroom() {
         </div>
 
         {/* Right: Panels */}
-        <div className="w-72 border-l border-slate-800/50 bg-[#070c14] flex-shrink-0 flex flex-col">
+        <div className="w-full lg:w-72 h-[42vh] min-h-[260px] lg:h-auto border-t lg:border-t-0 lg:border-l border-slate-800/50 bg-[#070c14] flex-shrink-0 flex flex-col">
           <Tabs value={rightTab} onValueChange={setRightTab} className="flex flex-col h-full">
-            <TabsList className="bg-transparent border-b border-slate-800/50 rounded-none h-10 px-2 gap-0.5 flex-shrink-0 w-full justify-start">
+            <TabsList className="bg-transparent border-b border-slate-800/50 rounded-none h-10 px-2 gap-0.5 flex-shrink-0 w-full justify-start overflow-x-auto">
               <TabsTrigger
                 value="chat"
-                className="text-[11px] font-medium data-[state=active]:bg-slate-800/60 data-[state=active]:text-white text-slate-500 rounded-md h-7 px-3 gap-1.5"
+                className="shrink-0 text-[11px] font-medium data-[state=active]:bg-slate-800/60 data-[state=active]:text-white text-slate-500 rounded-md h-7 px-3 gap-1.5"
               >
                 <MessageSquare style={{ width: 12, height: 12 }} /> Chat
               </TabsTrigger>
               <TabsTrigger
                 value="ai"
-                className="text-[11px] font-medium data-[state=active]:bg-violet-500/15 data-[state=active]:text-violet-400 text-slate-500 rounded-md h-7 px-3 gap-1.5"
+                className="shrink-0 text-[11px] font-medium data-[state=active]:bg-violet-500/15 data-[state=active]:text-violet-400 text-slate-500 rounded-md h-7 px-3 gap-1.5"
               >
                 <Sparkles style={{ width: 12, height: 12 }} /> AI
               </TabsTrigger>
               <TabsTrigger
                 value="output"
-                className="text-[11px] font-medium data-[state=active]:bg-slate-800/60 data-[state=active]:text-white text-slate-500 rounded-md h-7 px-3 gap-1.5"
+                className="shrink-0 text-[11px] font-medium data-[state=active]:bg-slate-800/60 data-[state=active]:text-white text-slate-500 rounded-md h-7 px-3 gap-1.5"
               >
                 <Terminal style={{ width: 12, height: 12 }} /> Output
                 {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
               </TabsTrigger>
               <TabsTrigger
                 value="versions"
-                className="text-[11px] font-medium data-[state=active]:bg-blue-500/15 data-[state=active]:text-blue-400 text-slate-500 rounded-md h-7 px-3 gap-1.5"
+                className="shrink-0 text-[11px] font-medium data-[state=active]:bg-blue-500/15 data-[state=active]:text-blue-400 text-slate-500 rounded-md h-7 px-3 gap-1.5"
               >
                 <History style={{ width: 12, height: 12 }} /> Versions
               </TabsTrigger>
