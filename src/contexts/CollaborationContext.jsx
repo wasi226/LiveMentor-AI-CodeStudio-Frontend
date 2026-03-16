@@ -1,13 +1,16 @@
 /**
  * Enhanced Real-Time Collaboration Context
- * Provides real-time collaboration functionality
+ * Provides Socket.IO-based collaboration functionality
  * Supports live code syncing, cursor tracking, and real-time chat
  */
 
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { io } from 'socket.io-client';
 import { useQueryClient } from '@tanstack/react-query';
 
 const CollaborationContext = createContext();
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const SOCKET_IO_PATH = import.meta.env.VITE_SOCKET_IO_PATH || '/socket.io';
 
 // Real-time collaboration events
 export const COLLABORATION_EVENTS = {
@@ -26,280 +29,250 @@ export const CollaborationProvider = ({ children }) => {
   const [isConnected, setIsConnected] = useState(false);
   const [activeUsers, setActiveUsers] = useState(new Map());
   const [typingUsers, setTypingUsers] = useState(new Set());
-  const [lastSeen, setLastSeen] = useState(Date.now());
   
   const queryClient = useQueryClient();
-  const pollInterval = useRef(null);
-  const heartbeatInterval = useRef(null);
+  const socketRef = useRef(null);
   const eventListeners = useRef(new Map());
+  const typingTimeouts = useRef(new Map());
   const currentUser = useRef(null);
   const currentClassroom = useRef(null);
-  
-  // Enhanced polling mechanism (much faster than 6s)
-  const POLL_INTERVAL = 1500; // 1.5 seconds for near real-time
-  const HEARTBEAT_INTERVAL = 10000; // 10 seconds
-  const USER_TIMEOUT = 30000; // 30 seconds to consider user offline
+
+  const parseMetadata = useCallback((metadata) => {
+    if (!metadata) return {};
+    if (typeof metadata === 'object') return metadata;
+
+    try {
+      return JSON.parse(metadata);
+    } catch {
+      return {};
+    }
+  }, []);
+
+  const notifyListeners = useCallback((eventType, data) => {
+    const listeners = eventListeners.current.get(eventType) || [];
+    listeners.forEach(callback => callback(data));
+  }, []);
+
+  const clearTypingTimeout = useCallback((email) => {
+    const timeoutId = typingTimeouts.current.get(email);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      typingTimeouts.current.delete(email);
+    }
+  }, []);
+
+  const handleUserTyping = useCallback((event) => {
+    const senderEmail = event?.sender_email;
+
+    if (!senderEmail || senderEmail === currentUser.current?.email) {
+      return;
+    }
+
+    setTypingUsers(prev => {
+      const next = new Set(prev);
+      next.add(senderEmail);
+      return next;
+    });
+
+    clearTypingTimeout(senderEmail);
+    const timeoutId = setTimeout(() => {
+      setTypingUsers(prev => {
+        const next = new Set(prev);
+        next.delete(senderEmail);
+        return next;
+      });
+      typingTimeouts.current.delete(senderEmail);
+    }, 2500);
+
+    typingTimeouts.current.set(senderEmail, timeoutId);
+  }, [clearTypingTimeout]);
+
+  const processRealtimeEvent = useCallback((event) => {
+    if (!event?.type) {
+      return;
+    }
+
+    const normalizedEvent = {
+      ...event,
+      metadata: parseMetadata(event.metadata)
+    };
+
+    if (normalizedEvent.type === COLLABORATION_EVENTS.USER_TYPING) {
+      handleUserTyping(normalizedEvent);
+    }
+
+    if (normalizedEvent.type === COLLABORATION_EVENTS.CHAT_MESSAGE) {
+      queryClient.invalidateQueries({ queryKey: ['classroomMessages', currentClassroom.current] });
+    }
+
+    notifyListeners(normalizedEvent.type, normalizedEvent);
+  }, [handleUserTyping, notifyListeners, parseMetadata, queryClient]);
+
+  const updatePresence = useCallback((participants = []) => {
+    const map = new Map();
+
+    participants.forEach((participant) => {
+      if (!participant?.email) {
+        return;
+      }
+
+      map.set(participant.email, {
+        email: participant.email,
+        name: participant.name || participant.full_name || participant.email,
+        role: participant.role || 'student',
+        lastSeen: Date.now()
+      });
+    });
+
+    setActiveUsers(map);
+  }, []);
 
   /**
    * Initialize collaboration session for a classroom
    */
   const connect = useCallback(async (classroomId, user) => {
-    if (!classroomId || !user) return;
+    if (!classroomId || !user) {
+      return;
+    }
+
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      console.error('Cannot connect to collaboration without auth token');
+      return;
+    }
+
+    const normalizedUser = {
+      ...user,
+      name: user.name || user.full_name || user.email,
+      full_name: user.full_name || user.name || user.email
+    };
+
+    if (
+      socketRef.current?.connected &&
+      currentClassroom.current === classroomId &&
+      currentUser.current?.email === normalizedUser.email
+    ) {
+      return;
+    }
+
+    if (socketRef.current) {
+      socketRef.current.removeAllListeners();
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
 
     currentClassroom.current = classroomId;
-    currentUser.current = user;
-    
-    try {
-      // TODO: Replace with actual backend API call
-      console.log('User joined:', {
-        classroom_id: classroomId,
-        sender_email: user.email,
-        sender_name: user.full_name,
-        message: `${user.full_name} joined the session`,
-        type: 'system_join',
-        metadata: JSON.stringify({
-          user_id: user.email,
-          timestamp: Date.now(),
-          action: 'join'
-        })
-      });
+    currentUser.current = normalizedUser;
 
+    const socket = io(API_BASE_URL, {
+      path: SOCKET_IO_PATH,
+      auth: { token },
+      transports: ['websocket', 'polling']
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
       setIsConnected(true);
-      startPolling();
-      startHeartbeat();
-      
-      emit(COLLABORATION_EVENTS.USER_JOIN, {
-        user: user,
-        timestamp: Date.now()
+      socket.emit('collaboration:join', { classroomId });
+    });
+
+    socket.on('disconnect', () => {
+      setIsConnected(false);
+    });
+
+    socket.on('connect_error', (error) => {
+      setIsConnected(false);
+      console.error('Socket.IO connection failed:', error.message);
+    });
+
+    socket.on('collaboration:presence', (payload) => {
+      updatePresence(payload?.participants || []);
+    });
+
+    socket.on('collaboration:event', (event) => {
+      processRealtimeEvent(event);
+    });
+
+    socket.on('collaboration:error', (payload) => {
+      console.warn('Collaboration error:', payload?.message || payload);
+    });
+
+    socket.on('collaboration:joined', () => {
+      notifyListeners(COLLABORATION_EVENTS.USER_JOIN, {
+        sender_email: normalizedUser.email,
+        sender_name: normalizedUser.full_name,
+        metadata: { timestamp: Date.now() }
       });
-      
-    } catch (error) {
-      console.error('Failed to connect to collaboration session:', error);
-    }
-  }, []);
+    });
+  }, [notifyListeners, processRealtimeEvent, updatePresence]);
 
   /**
    * Disconnect from collaboration session
    */
   const disconnect = useCallback(async () => {
-    if (!currentClassroom.current || !currentUser.current) return;
+    const socket = socketRef.current;
 
-    try {
-      // TODO: Replace with actual backend API call
-      console.log('User left:', {
-        classroom_id: currentClassroom.current,
-        sender_email: currentUser.current.email,
-        sender_name: currentUser.current.full_name,
-        message: `${currentUser.current.full_name} left the session`,
-        type: 'system_leave',
-        metadata: JSON.stringify({
-          user_id: currentUser.current.email,
-          timestamp: Date.now(),
-          action: 'leave'
-        })
-      });
-
-    } catch (error) {
-      console.error('Failed to send leave message:', error);
+    if (socket) {
+      try {
+        if (socket.connected) {
+          socket.emit('collaboration:leave');
+        }
+      } catch (error) {
+        console.error('Failed to emit collaboration leave:', error);
+      } finally {
+        socket.removeAllListeners();
+        socket.disconnect();
+      }
     }
 
-    stopPolling();
-    stopHeartbeat();
+    socketRef.current = null;
+    typingTimeouts.current.forEach((timeoutId) => clearTimeout(timeoutId));
+    typingTimeouts.current.clear();
+
     setIsConnected(false);
     setActiveUsers(new Map());
     setTypingUsers(new Set());
-    
+
     currentClassroom.current = null;
     currentUser.current = null;
   }, []);
 
   /**
-   * Start enhanced polling for real-time updates
-   */
-  const startPolling = useCallback(() => {
-    if (pollInterval.current) return;
-
-    const poll = async () => {
-      if (!currentClassroom.current) return;
-
-      try {
-        // Get recent messages and presence updates (mock)
-        const messages = [];
-
-        // Parse recent events
-        const recentEvents = messages
-          .filter(msg => new Date(msg.created_date).getTime() > lastSeen)
-          .sort((a, b) => new Date(a.created_date) - new Date(b.created_date));
-
-        recentEvents.forEach(event => {
-          processRealtimeEvent(event);
-        });
-
-        if (recentEvents.length > 0) {
-          setLastSeen(Date.now());
-        }
-
-        // Update active users based on recent activity
-        updateActiveUsers(messages);
-
-      } catch (error) {
-        console.error('Polling error:', error);
-      }
-    };
-
-    poll(); // Initial poll
-    pollInterval.current = setInterval(poll, POLL_INTERVAL);
-  }, []);
-
-  /**
-   * Stop polling
-   */
-  const stopPolling = useCallback(() => {
-    if (pollInterval.current) {
-      clearInterval(pollInterval.current);
-      pollInterval.current = null;
-    }
-  }, []);
-
-  /**
-   * Start heartbeat to maintain presence
-   */
-  const startHeartbeat = useCallback(() => {
-    if (heartbeatInterval.current) return;
-
-    const sendHeartbeat = async () => {
-      if (!currentClassroom.current || !currentUser.current) return;
-
-      try {
-        // Mock heartbeat - disabled
-        console.log('Heartbeat disabled - collaboration features not available');
-      } catch (error) {
-        console.error('Heartbeat error:', error);
-      }
-    };
-
-    heartbeatInterval.current = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL);
-  }, []);
-
-  /**
-   * Stop heartbeat
-   */
-  const stopHeartbeat = useCallback(() => {
-    if (heartbeatInterval.current) {
-      clearInterval(heartbeatInterval.current);
-      heartbeatInterval.current = null;
-    }
-  }, []);
-
-  /**
-   * Process real-time events from polling
-   */
-  const processRealtimeEvent = useCallback((event) => {
-    const eventType = event.type;
-    const data = {
-      ...event,
-      metadata: event.metadata ? JSON.parse(event.metadata) : {}
-    };
-
-    // Emit to registered listeners
-    const listeners = eventListeners.current.get(eventType) || [];
-    listeners.forEach(callback => callback(data));
-
-    // Handle specific event types
-    switch (eventType) {
-      case 'code_sync':
-        queryClient.invalidateQueries({ queryKey: ['classroomCode'] });
-        break;
-      case 'text':
-        queryClient.invalidateQueries({ queryKey: ['classroomMessages'] });
-        break;
-      case 'user_typing':
-        handleUserTyping(data);
-        break;
-    }
-  }, [queryClient]);
-
-  /**
-   * Handle user typing indicators
-   */
-  const handleUserTyping = useCallback((data) => {
-    const { sender_email } = data;
-    if (sender_email === currentUser.current?.email) return;
-
-    setTypingUsers(prev => {
-      const newSet = new Set(prev);
-      newSet.add(sender_email);
-      return newSet;
-    });
-
-    // Clear typing indicator after 3 seconds
-    setTimeout(() => {
-      setTypingUsers(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(sender_email);
-        return newSet;
-      });
-    }, 3000);
-  }, []);
-
-  /**
-   * Update active users based on recent messages
-   */
-  const updateActiveUsers = useCallback((messages) => {
-    const now = Date.now();
-    const activeUserMap = new Map();
-
-    // Get recent activity (last 5 minutes)
-    const recentActivity = messages.filter(msg => {
-      const msgTime = new Date(msg.created_date).getTime();
-      return now - msgTime < USER_TIMEOUT;
-    });
-
-    recentActivity.forEach(msg => {
-      if (msg.sender_email && msg.sender_name) {
-        activeUserMap.set(msg.sender_email, {
-          email: msg.sender_email,
-          name: msg.sender_name,
-          lastSeen: new Date(msg.created_date).getTime(),
-          isTyping: typingUsers.has(msg.sender_email)
-        });
-      }
-    });
-
-    setActiveUsers(activeUserMap);
-  }, [typingUsers]);
-
-  /**
    * Emit a collaboration event
    */
   const emit = useCallback(async (eventType, data) => {
-    if (!currentClassroom.current || !currentUser.current) return;
+    const socket = socketRef.current;
 
-    try {
-      const eventData = {
-        classroom_id: currentClassroom.current,
-        sender_email: currentUser.current.email,
-        sender_name: currentUser.current.full_name,
-        message: data.message || JSON.stringify(data),
-        type: eventType,
-        metadata: JSON.stringify({
-          ...data,
-          timestamp: Date.now(),
-          user_id: currentUser.current.email
-        })
-      };
-
-      // Mock event creation - disabled
-      console.log('Event emission disabled:', eventType, data);
-      
-      // Immediately notify local listeners
-      const listeners = eventListeners.current.get(eventType) || [];
-      listeners.forEach(callback => callback({ ...eventData, metadata: data }));
-
-    } catch (error) {
-      console.error('Failed to emit event:', error);
+    if (!socket || !currentClassroom.current || !currentUser.current) {
+      return;
     }
-  }, []);
+
+    const payload = {
+      eventType,
+      data: {
+        ...data,
+        timestamp: data?.timestamp || Date.now()
+      }
+    };
+
+    socket.emit('collaboration:event', payload);
+
+    const localEvent = {
+      classroom_id: currentClassroom.current,
+      sender_email: currentUser.current.email,
+      sender_name: currentUser.current.full_name || currentUser.current.name,
+      type: eventType,
+      metadata: payload.data,
+      created_date: new Date().toISOString()
+    };
+
+    if (eventType === COLLABORATION_EVENTS.USER_TYPING) {
+      handleUserTyping(localEvent);
+    }
+
+    notifyListeners(eventType, localEvent);
+  }, [handleUserTyping, notifyListeners]);
 
   /**
    * Subscribe to collaboration events
@@ -359,28 +332,39 @@ export const CollaborationProvider = ({ children }) => {
     };
   }, [disconnect]);
 
-  const contextValue = {
+  const contextValue = useMemo(() => ({
     // Connection state
     isConnected,
     activeUsers,
     typingUsers,
-    
+
     // Connection methods
     connect,
     disconnect,
-    
+
     // Event system
     emit,
     on,
-    
+
     // Collaboration methods
     syncCode,
-    syncCursor, 
+    syncCursor,
     sendTyping,
-    
+
     // Constants
     COLLABORATION_EVENTS
-  };
+  }), [
+    activeUsers,
+    connect,
+    disconnect,
+    emit,
+    isConnected,
+    on,
+    sendTyping,
+    syncCode,
+    syncCursor,
+    typingUsers
+  ]);
 
   return (
     <CollaborationContext.Provider value={contextValue}>

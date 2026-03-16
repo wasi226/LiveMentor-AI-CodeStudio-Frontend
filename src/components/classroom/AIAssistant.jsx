@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, Send, User, Zap } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+
 const QUICK_PROMPTS = [
   'Explain this code',
   'Find bugs',
@@ -29,15 +31,42 @@ export default function AIAssistant({ code, language }) {
     setLoading(true);
 
     try {
-      // Mock AI response
-      const response = 'AI Assistant functionality is currently disabled. This is a mock response to your question about: ' + userMsg;
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('You must be logged in to use the AI assistant.');
+      }
 
-      setMessages(prev => [...prev, { role: 'assistant', content: response }]);
+      const history = messages
+        .filter((msg) => msg.role === 'user' || msg.role === 'assistant')
+        .slice(-10)
+        .map((msg) => ({ role: msg.role, content: msg.content }));
+
+      const response = await fetch(`${API_BASE_URL}/api/ai/assistant`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          message: userMsg,
+          code,
+          language,
+          history
+        })
+      });
+
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || payload?.message || 'AI request failed.');
+      }
+
+      setMessages(prev => [...prev, { role: 'assistant', content: payload.response }]);
     } catch (error) {
       console.error('AI Assistant Error:', error);
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: 'Sorry, I encountered an error while processing your request. Please try again or check your connection.' 
+        content: `Sorry, I encountered an error while processing your request: ${error.message}`
       }]);
     } finally {
       setLoading(false);

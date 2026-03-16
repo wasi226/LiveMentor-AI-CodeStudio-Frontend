@@ -29,7 +29,7 @@ const defaultCode = {
   rust:       `// Welcome to CodeClass.ai\nfn main() {\n    // Write your solution here\n    println!("Hello, world!");\n}`,
 };
 
-export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onRun, onSubmit, isRunning }) {
+export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning }) {
   const [copied, setCopied] = useState(false);
   const [showVisualizer, setShowVisualizer] = useState(false);
   const textareaRef = useRef(null);
@@ -47,6 +47,17 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
     onCodeChange(defaultCode[language] || defaultCode.javascript);
   };
 
+  const emitCursorChange = (target) => {
+    if (!onCursorChange) {
+      return;
+    }
+
+    onCursorChange(target.selectionStart, {
+      start: target.selectionStart,
+      end: target.selectionEnd
+    });
+  };
+
   // Handle tab key in textarea
   const handleKeyDown = (e) => {
     if (e.key === 'Tab') {
@@ -58,6 +69,7 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
       setTimeout(() => {
         if (textareaRef.current) {
           textareaRef.current.selectionStart = textareaRef.current.selectionEnd = start + 2;
+          emitCursorChange(textareaRef.current);
         }
       }, 0);
     }
@@ -143,6 +155,9 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
           value={displayCode}
           onChange={(e) => onCodeChange(e.target.value)}
           onKeyDown={handleKeyDown}
+          onSelect={(e) => emitCursorChange(e.target)}
+          onClick={(e) => emitCursorChange(e.target)}
+          onKeyUp={(e) => emitCursorChange(e.target)}
           className="flex-1 bg-transparent text-slate-200 p-4 resize-none outline-none font-mono text-[13px] leading-6 overflow-auto"
           spellCheck={false}
           autoCapitalize="off"

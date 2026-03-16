@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { MessageSquare, Sparkles, Terminal, ArrowLeft, PanelLeftClose, PanelLeftOpen, CheckCircle2, History } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Link } from 'react-router-dom';
@@ -13,10 +13,54 @@ import VersionHistoryPanel from '@/components/classroom/VersionHistoryPanel';
 import codeExecutionService from '@/services/codeExecutionService';
 import versionControl from '@/services/versionControl';
 import { useCollaboration } from '@/contexts/CollaborationContext';
+import { useAuth } from '@/lib/AuthContext';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const LANGUAGE_EXTENSIONS = {
+  javascript: 'js',
+  python: 'py',
+  cpp: 'cpp',
+  java: 'java',
+  typescript: 'ts',
+  go: 'go',
+  rust: 'rs'
+};
+
+const isMobileViewport = () => {
+  const viewportWidth = globalThis.window?.innerWidth;
+  if (!viewportWidth) {
+    return false;
+  }
+
+  return viewportWidth < 1024;
+};
+
+const normalizeMessage = (message) => {
+  const metadata = (() => {
+    if (!message?.metadata) return {};
+    if (typeof message.metadata === 'object') return message.metadata;
+    try {
+      return JSON.parse(message.metadata);
+    } catch {
+      return {};
+    }
+  })();
+
+  return {
+    id: message?.id || message?._id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    sender_email: message?.sender_email,
+    sender_name: message?.sender_name || message?.sender_email?.split('@')[0] || 'User',
+    message: message?.message || metadata?.message || '',
+    type: message?.type || metadata?.type || 'message',
+    created_date: message?.created_date || message?.created_at || new Date().toISOString(),
+    metadata
+  };
+};
 
 export default function Classroom() {
-  const urlParams = new URLSearchParams(window.location.search);
+  const urlParams = new URLSearchParams(globalThis.location.search);
   const classroomId = urlParams.get('id');
+  const { user, getAuthHeaders } = useAuth();
 
   const [code, setCode] = useState('');
   const [language, setLanguage] = useState('javascript');
@@ -26,13 +70,15 @@ export default function Classroom() {
   const [rightTab, setRightTab] = useState('chat');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [remoteUsers, setRemoteUsers] = useState(new Map());
-  const [codeCursors, setCodeCursors] = useState(new Map());
-  const [isMobileLayout, setIsMobileLayout] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 1024 : false));
+  const [chatMessages, setChatMessages] = useState([]);
+  const [isMobileLayout, setIsMobileLayout] = useState(() => isMobileViewport());
   
-  const queryClient = useQueryClient();
   const codeChangeTimeout = useRef(null);
+  const cursorSyncTimeout = useRef(null);
   const lastCodeSync = useRef('');
+  const pendingCodeSync = useRef('');
+  const latestCodeRef = useRef('');
+  const latestLanguageRef = useRef('javascript');
   const autoSaveInitialized = useRef(false);
   const previousMobileState = useRef(isMobileLayout);
   
@@ -42,7 +88,6 @@ export default function Classroom() {
     disconnect, 
     isConnected, 
     activeUsers, 
-    typingUsers,
     syncCode, 
     syncCursor,
     sendTyping, 
@@ -51,35 +96,60 @@ export default function Classroom() {
     COLLABORATION_EVENTS 
   } = useCollaboration();
 
-  const { data: user } = useQuery({ queryKey: ['currentUser'], queryFn: () => Promise.resolve({ email: 'user@example.com', name: 'User' }) });
-
   const { data: classroom } = useQuery({
     queryKey: ['classroom', classroomId],
     queryFn: async () => {
-      // Mock classroom data
-      return null;
+      const response = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}`, {
+        headers: getAuthHeaders()
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load classroom details');
+      }
+
+      const payload = await response.json();
+      return payload.classroom;
     },
-    enabled: !!classroomId,
+    enabled: Boolean(classroomId && user?.email),
   });
 
-  // Enhanced real-time messages with 1.5s polling (much faster)
-  const { data: messages = [] } = useQuery({
+  const { data: messageHistory = [] } = useQuery({
     queryKey: ['classroomMessages', classroomId],
-    queryFn: () => Promise.resolve([]),
-    enabled: !!classroomId,
-    refetchInterval: isConnected ? 1500 : 6000, // Faster when connected
+    queryFn: async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/chat/messages?classroom_id=${encodeURIComponent(classroomId)}&limit=100`,
+          { headers: getAuthHeaders() }
+        );
+
+        if (!response.ok) {
+          return [];
+        }
+
+        const payload = await response.json();
+        return (payload.messages || []).map(normalizeMessage);
+      } catch (fetchError) {
+        console.warn('Unable to fetch chat history, continuing with real-time only mode.', fetchError);
+        return [];
+      }
+    },
+    enabled: Boolean(classroomId && user?.email),
   });
 
   useEffect(() => {
+    setChatMessages(messageHistory);
+  }, [messageHistory, classroomId]);
+
+  useEffect(() => {
     const handleResize = () => {
-      setIsMobileLayout(window.innerWidth < 1024);
+      setIsMobileLayout(isMobileViewport());
     };
 
     handleResize();
-    window.addEventListener('resize', handleResize);
+    globalThis.window?.addEventListener('resize', handleResize);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
+      globalThis.window?.removeEventListener('resize', handleResize);
     };
   }, []);
 
@@ -90,29 +160,43 @@ export default function Classroom() {
     }
   }, [isMobileLayout]);
 
+  useEffect(() => {
+    latestCodeRef.current = code;
+    latestLanguageRef.current = language;
+  }, [code, language]);
+
+  useEffect(() => {
+    return () => {
+      if (codeChangeTimeout.current) {
+        clearTimeout(codeChangeTimeout.current);
+      }
+      if (cursorSyncTimeout.current) {
+        clearTimeout(cursorSyncTimeout.current);
+      }
+    };
+  }, []);
+
   // Connect to collaboration session when user and classroom are ready
   useEffect(() => {
-    if (user && classroomId && !isConnected) {
+    if (user?.email && classroomId) {
       connect(classroomId, user);
     }
 
     return () => {
-      if (isConnected) {
-        disconnect();
-      }
+      disconnect();
     };
-  }, [user, classroomId, isConnected, connect, disconnect]);
+  }, [user?.email, classroomId, connect, disconnect]);
 
   // Initialize version control and auto-save
   useEffect(() => {
-    if (user && classroomId && !autoSaveInitialized.current) {
+    if (user?.email && classroomId && !autoSaveInitialized.current) {
       // Initialize version control
       versionControl.initializeVersionControl(classroomId, user.email);
       
       // Start auto-save
       versionControl.startAutoSave(classroomId, user.email, () => ({
-        code,
-        language
+        code: latestCodeRef.current,
+        language: latestLanguageRef.current
       }));
       
       autoSaveInitialized.current = true;
@@ -121,9 +205,10 @@ export default function Classroom() {
     return () => {
       if (autoSaveInitialized.current) {
         versionControl.stopAutoSave();
+        autoSaveInitialized.current = false;
       }
     };
-  }, [user, classroomId, code, language]);
+  }, [user?.email, classroomId]);
 
   // Set up collaboration event listeners
   useEffect(() => {
@@ -136,22 +221,11 @@ export default function Classroom() {
       if (data.sender_email !== user?.email && data.metadata) {
         const { code: newCode, language: newLang } = data.metadata;
         if (newCode && newCode !== lastCodeSync.current) {
-          setCode(newCode);
+          setCode((previousCode) => (previousCode === newCode ? previousCode : newCode));
           if (newLang) setLanguage(newLang);
           lastCodeSync.current = newCode;
+          pendingCodeSync.current = newCode;
         }
-      }
-    });
-
-    // Listen for cursor movements
-    const unsubscribeCursor = on(COLLABORATION_EVENTS.CURSOR_MOVE, (data) => {
-      if (data.sender_email !== user?.email && data.metadata) {
-        setCodeCursors(prev => new Map(prev.set(data.sender_email, {
-          position: data.metadata.position,
-          selection: data.metadata.selection,
-          user: data.sender_name,
-          timestamp: data.metadata.timestamp
-        })));
       }
     });
 
@@ -184,12 +258,36 @@ export default function Classroom() {
       }
     });
 
+    const unsubscribeChatMessage = on(COLLABORATION_EVENTS.CHAT_MESSAGE, (data) => {
+      const metadata = data.metadata || {};
+      const messageText = metadata.message || data.message;
+
+      if (!messageText) {
+        return;
+      }
+
+      setChatMessages((previous) => {
+        const message = normalizeMessage({
+          id: data.id,
+          sender_email: data.sender_email,
+          sender_name: data.sender_name,
+          message: messageText,
+          type: metadata.type || 'message',
+          metadata,
+          created_date: data.created_date
+        });
+
+        const exists = previous.some((existing) => existing.id === message.id);
+        return exists ? previous : [...previous, message];
+      });
+    });
+
     unsubscribeFunctions.push(
       unsubscribeCodeChange,
-      unsubscribeCursor,
       unsubscribeLanguage, 
       unsubscribeExecution,
-      unsubscribeExecutionResult
+      unsubscribeExecutionResult,
+      unsubscribeChatMessage
     );
 
     return () => {
@@ -202,17 +300,22 @@ export default function Classroom() {
   }, [classroom]);
 
   const sendMessageMutation = useMutation({
-    mutationFn: (message) => {
-      // Mock message sending - disabled
-      throw new Error('Chat functionality is currently disabled.');
+    mutationFn: async (message) => {
+      await emit(COLLABORATION_EVENTS.CHAT_MESSAGE, {
+        message,
+        type: 'message',
+        timestamp: Date.now()
+      });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['classroomMessages', classroomId] }),
+    onError: (mutationError) => {
+      console.error('Failed to send classroom message:', mutationError);
+    },
   });
 
   // Enhanced code change handler with real-time sync and version control
   const handleCodeChange = (newCode) => {
     setCode(newCode);
-    lastCodeSync.current = newCode;
+    pendingCodeSync.current = newCode;
 
     // Mark changes for version control auto-save
     versionControl.markPendingChanges();
@@ -228,10 +331,25 @@ export default function Classroom() {
     }
 
     codeChangeTimeout.current = setTimeout(() => {
-      if (isConnected && newCode !== lastCodeSync.current) {
+      if (isConnected && pendingCodeSync.current === newCode && newCode !== lastCodeSync.current) {
         syncCode(newCode, language);
+        lastCodeSync.current = newCode;
       }
     }, 800); // 800ms debounce
+  };
+
+  const handleCursorChange = (position, selection) => {
+    if (!isConnected) {
+      return;
+    }
+
+    if (cursorSyncTimeout.current) {
+      clearTimeout(cursorSyncTimeout.current);
+    }
+
+    cursorSyncTimeout.current = setTimeout(() => {
+      syncCursor(position, selection);
+    }, 60);
   };
 
   // Handle language change with sync
@@ -341,13 +459,13 @@ export default function Classroom() {
     console.log('Submission functionality is currently disabled');
 
     // Save submission version for version control
-    if (submission && user) {
+    if (user?.email && classroomId) {
       await versionControl.saveSubmissionVersion(
         classroomId, 
         user.email, 
         code, 
         language, 
-        submission.id
+        `manual_submission_${Date.now()}`
       );
     }
 
@@ -366,11 +484,35 @@ export default function Classroom() {
     }
   };
 
-  const participants = [];
-  if (classroom) {
-    if (classroom.faculty_email) participants.push({ email: classroom.faculty_email, name: 'Professor' });
-    (classroom.student_emails || []).forEach(email => participants.push({ email, name: email.split('@')[0] }));
+  const participantMap = new Map();
+
+  if (classroom?.faculty_email) {
+    participantMap.set(classroom.faculty_email, {
+      email: classroom.faculty_email,
+      name: 'Professor',
+      role: 'faculty'
+    });
   }
+
+  (classroom?.student_emails || []).forEach((email) => {
+    participantMap.set(email, {
+      email,
+      name: email.split('@')[0],
+      role: 'student'
+    });
+  });
+
+  activeUsers.forEach((participant, email) => {
+    participantMap.set(email, {
+      email,
+      name: participant.name || participantMap.get(email)?.name || email.split('@')[0],
+      role: participant.role || participantMap.get(email)?.role || 'student'
+    });
+  });
+
+  const participants = Array.from(participantMap.values());
+  const onlineCount = activeUsers.size || participants.length;
+  const currentFileExtension = LANGUAGE_EXTENSIONS[language] || 'txt';
 
   return (
     <div className="h-screen bg-[#0a0f1a] flex flex-col overflow-hidden select-none">
@@ -411,7 +553,7 @@ export default function Classroom() {
           </div>
           <div className="flex items-center gap-1.5 text-[10px]">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-emerald-400 font-medium">{participants.length} online</span>
+            <span className="text-emerald-400 font-medium">{onlineCount} online</span>
           </div>
         </div>
 
@@ -462,7 +604,7 @@ export default function Classroom() {
               }
             </button>
             <div className="w-px h-3.5 bg-slate-800 mx-1" />
-            <span className="text-[10px] font-mono text-slate-600">main.{language === 'javascript' ? 'js' : language === 'python' ? 'py' : language === 'cpp' ? 'cpp' : language === 'java' ? 'java' : language === 'typescript' ? 'ts' : language === 'go' ? 'go' : 'rs'}</span>
+            <span className="text-[10px] font-mono text-slate-600">main.{currentFileExtension}</span>
           </div>
 
           <div className="flex-1 p-2 sm:p-3 overflow-hidden min-h-[260px]">
@@ -471,6 +613,7 @@ export default function Classroom() {
               onLanguageChange={handleLanguageChange}
               code={code}  
               onCodeChange={handleCodeChange}
+              onCursorChange={handleCursorChange}
               onRun={handleRun}
               onSubmit={handleSubmit}
               isRunning={isRunning}
@@ -510,7 +653,7 @@ export default function Classroom() {
             </TabsList>
 
             <TabsContent value="chat" className="flex-1 mt-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-col">
-              <ChatPanel messages={messages} currentUser={user} onSendMessage={(msg) => sendMessageMutation.mutate(msg)} />
+              <ChatPanel messages={chatMessages} currentUser={user} onSendMessage={(msg) => sendMessageMutation.mutate(msg)} />
             </TabsContent>
             <TabsContent value="ai" className="flex-1 mt-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-col">
               <AIAssistant code={code} language={language} />

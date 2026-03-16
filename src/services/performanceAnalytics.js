@@ -25,6 +25,25 @@ export const PROGRAMMING_CONCEPTS = {
   PROBLEM_SOLVING: 'problem_solving'
 };
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+
+const normalizeTimestamp = (record) => {
+  const raw =
+    record?.created_date ||
+    record?.created_at ||
+    record?.submitted_at ||
+    record?.updated_at ||
+    record?.updated_date;
+
+  const parsed = raw ? new Date(raw) : new Date();
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+};
+
+const isCompletedSubmission = (submission) => {
+  const status = String(submission?.status || '').toLowerCase();
+  return ['submitted', 'grading', 'graded', 'returned', 'completed'].includes(status);
+};
+
 class PerformanceAnalytics {
   constructor() {
     this.metrics = new Map();
@@ -37,23 +56,94 @@ class PerformanceAnalytics {
     };
   }
 
+  getAuthHeaders() {
+    const token = localStorage.getItem('auth_token');
+
+    return token
+      ? {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      : {
+          'Content-Type': 'application/json'
+        };
+  }
+
+  async apiGet(path) {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: this.getAuthHeaders()
+    });
+
+    if (!response.ok) {
+      throw new Error(`Request failed for ${path} with status ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  async fetchSubmissions({ classroomId = null, studentEmail = null } = {}) {
+    const params = new URLSearchParams();
+
+    if (classroomId) {
+      params.set('classroom_id', classroomId);
+    }
+
+    if (studentEmail) {
+      params.set('student_email', studentEmail);
+    }
+
+    const query = params.toString();
+  const path = query ? `/api/submissions?${query}` : '/api/submissions';
+  const payload = await this.apiGet(path);
+
+    return payload?.submissions || [];
+  }
+
+  async fetchChatMessages(classroomId) {
+    if (!classroomId) {
+      return [];
+    }
+
+    try {
+      const payload = await this.apiGet(`/api/chat/messages?classroom_id=${encodeURIComponent(classroomId)}&limit=200`);
+      return payload?.messages || [];
+    } catch {
+      // Chat history may be unavailable when the data service is not configured.
+      return [];
+    }
+  }
+
+  async fetchClassroom(classroomId) {
+    const payload = await this.apiGet(`/api/classrooms/${classroomId}`);
+    return payload?.classroom || null;
+  }
+
   /**
    * Analyze student performance based on submissions
    */
   async analyzeStudentPerformance(studentEmail, classroomId = null) {
     try {
-      // Get student submissions (mock data)
-      let submissions = [];
-      
-      if (classroomId) {
-        submissions = submissions.filter(s => s.classroom_id === classroomId);
-      }
+      let submissions = await this.fetchSubmissions({
+        classroomId,
+        studentEmail
+      });
 
-      // Get chat messages for AI help tracking (mock data)
-      let chatMessages = [];
-      if (classroomId) {
-        chatMessages = [];
-      }
+      submissions = submissions.filter((submission) => {
+        if (!studentEmail) {
+          return true;
+        }
+
+        return submission.student_email === studentEmail;
+      });
+
+      let chatMessages = await this.fetchChatMessages(classroomId);
+      chatMessages = chatMessages.filter((message) => {
+        if (!studentEmail) {
+          return true;
+        }
+
+        return message.sender_email === studentEmail;
+      });
 
       const analysis = this.calculatePerformanceMetrics(submissions, chatMessages);
       const category = this.categorizePerformance(analysis.overallScore);
@@ -86,12 +176,12 @@ class PerformanceAnalytics {
 
     // Filter recent submissions (last 30 days)
     const recentSubmissions = submissions.filter(s => 
-      new Date(s.created_date) >= thirtyDaysAgo
+      normalizeTimestamp(s) >= thirtyDaysAgo
     );
 
     // Calculate basic metrics
     const totalSubmissions = recentSubmissions.length;
-    const completedSubmissions = recentSubmissions.filter(s => s.status === 'completed').length;
+    const completedSubmissions = recentSubmissions.filter(s => isCompletedSubmission(s)).length;
     const scores = recentSubmissions.map(s => s.score || 0).filter(score => score > 0);
     
     const averageScore = scores.length > 0 
@@ -116,7 +206,7 @@ class PerformanceAnalytics {
 
     // Time-based metrics
     const lastSubmissionDate = recentSubmissions.length > 0 
-      ? new Date(Math.max(...recentSubmissions.map(s => new Date(s.created_date))))
+      ? new Date(Math.max(...recentSubmissions.map(s => normalizeTimestamp(s).getTime())))
       : null;
 
     const daysSinceLastSubmission = lastSubmissionDate 
@@ -126,7 +216,7 @@ class PerformanceAnalytics {
     // AI help frequency
     const aiHelpRequests = chatMessages.filter(msg => 
       msg.type === 'ai_request' && 
-      new Date(msg.created_date) >= thirtyDaysAgo
+      normalizeTimestamp(msg) >= thirtyDaysAgo
     ).length;
 
     // Speed metrics (time between submissions)
@@ -211,14 +301,14 @@ class PerformanceAnalytics {
   calculateSubmissionIntervals(submissions) {
     if (submissions.length < 2) return [];
     
-    const sortedSubmissions = submissions.sort((a, b) => 
-      new Date(a.created_date) - new Date(b.created_date)
+    const sortedSubmissions = [...submissions].sort((a, b) => 
+      normalizeTimestamp(a) - normalizeTimestamp(b)
     );
 
     const intervals = [];
     for (let i = 1; i < sortedSubmissions.length; i++) {
-      const prev = new Date(sortedSubmissions[i - 1].created_date);
-      const curr = new Date(sortedSubmissions[i].created_date);
+      const prev = normalizeTimestamp(sortedSubmissions[i - 1]);
+      const curr = normalizeTimestamp(sortedSubmissions[i]);
       intervals.push(Math.floor((curr - prev) / (1000 * 60 * 60))); // Hours
     }
 
@@ -270,7 +360,7 @@ class PerformanceAnalytics {
           conceptData.successes++;
         }
         
-        conceptData.lastPracticed = submission.created_date;
+        conceptData.lastPracticed = normalizeTimestamp(submission).toISOString();
       });
     });
 
@@ -294,7 +384,7 @@ class PerformanceAnalytics {
    */
   detectProgrammingConcepts(code, language) {
     const concepts = [];
-    const codeStr = code.toLowerCase();
+    const codeStr = String(code || '').toLowerCase();
 
     // Variable detection
     if (codeStr.includes('=') && !codeStr.includes('==')) {
@@ -322,7 +412,7 @@ class PerformanceAnalytics {
     }
 
     // Always include problem solving if there's substantial code
-    if (code.length > 50) {
+    if (codeStr.length > 50) {
       concepts.push(PROGRAMMING_CONCEPTS.PROBLEM_SOLVING);
     }
 
@@ -381,8 +471,8 @@ class PerformanceAnalytics {
         warnings.push({
           type: 'CONCEPT_WEAKNESS',
           severity: 'medium',
-          message: `Struggling with ${concept.replace(/_/g, ' ')} (${data.proficiency.toFixed(1)}% proficiency).`,
-          suggestion: `Provide targeted practice exercises for ${concept.replace(/_/g, ' ')}.`
+          message: `Struggling with ${concept.replaceAll('_', ' ')} (${data.proficiency.toFixed(1)}% proficiency).`,
+          suggestion: `Provide targeted practice exercises for ${concept.replaceAll('_', ' ')}.`
         });
       }
     });
@@ -465,7 +555,11 @@ class PerformanceAnalytics {
    */
   generateSkillHeatmap(conceptSkills) {
     return Object.entries(conceptSkills).map(([concept, data]) => ({
-      concept: concept.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+      concept: concept
+        .replaceAll('_', ' ')
+        .split(' ')
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' '),
       proficiency: data.proficiency || 0,
       attempts: data.attempts || 0,
       successRate: data.successRate || 0,
@@ -489,8 +583,11 @@ class PerformanceAnalytics {
    */
   async analyzeClassroomPerformance(classroomId) {
     try {
-      // Get all classroom participants (mock data)
-      const classroom = { student_emails: [] };
+      const classroom = await this.fetchClassroom(classroomId);
+      if (!classroom) {
+        return null;
+      }
+
       const studentEmails = classroom.student_emails || [];
 
       const studentAnalyses = [];
