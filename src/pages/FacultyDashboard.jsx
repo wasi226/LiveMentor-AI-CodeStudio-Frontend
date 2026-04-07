@@ -212,9 +212,10 @@ function CodePreview({ code, language, maxLines = 40, heightClass = 'max-h-40' }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity
 export default function FacultyDashboard() {
+  const dashboardParams = new URLSearchParams(globalThis.location.search);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [copiedCode, setCopiedCode] = useState(null);
-  const [selectedClassroomId, setSelectedClassroomId] = useState('');
+  const [selectedClassroomId, setSelectedClassroomId] = useState(dashboardParams.get('classroomId') || '');
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
   const [liveFeed, setLiveFeed] = useState([]);
   const [studentActivity, setStudentActivity] = useState({});
@@ -553,7 +554,8 @@ export default function FacultyDashboard() {
         throw new Error(payload.message || payload.error || 'Failed to create intervention room');
       }
 
-      navigate(`/classroom?id=${selectedClassroomId}&room=${encodeURIComponent(payload.room.room_id)}&focusStudent=${encodeURIComponent(studentEmail)}`);
+      const returnTo = `/faculty-dashboard?classroomId=${encodeURIComponent(selectedClassroomId)}`;
+      navigate(`/classroom?id=${selectedClassroomId}&room=${encodeURIComponent(payload.room.room_id)}&focusStudent=${encodeURIComponent(studentEmail)}&returnTo=${encodeURIComponent(returnTo)}`);
     } catch (error) {
       console.error('Intervention room creation failed:', error);
     }
@@ -1273,17 +1275,20 @@ export default function FacultyDashboard() {
                         <LayoutGrid style={{ width: 12, height: 12 }} /> Open Live Code Wall
                       </Button>
                     </DialogTrigger>
-                    <DialogContent className="bg-[#0d1117] border-slate-800 text-white max-w-6xl w-[95vw] max-h-[85vh] overflow-hidden">
-                      <DialogHeader>
-                        <DialogTitle className="text-[15px]">Live Code Wall · {selectedClassroom.name}</DialogTitle>
-                        <DialogDescription className="text-slate-500 text-[12px]">
-                          See every student's latest code and jump into intervention in one click.
-                        </DialogDescription>
-                      </DialogHeader>
+                    <DialogContent className="bg-[#0d1117] border-slate-800 text-white max-w-7xl w-[96vw] max-h-[92vh] overflow-hidden p-0">
+                      <div className="flex h-[92vh] flex-col min-h-0">
+                        <div className="px-5 pt-5 pb-3 border-b border-slate-800/70 flex-shrink-0">
+                          <DialogHeader>
+                            <DialogTitle className="text-[15px]">Live Code Wall · {selectedClassroom.name}</DialogTitle>
+                            <DialogDescription className="text-slate-500 text-[12px]">
+                              See every student's latest code, scroll through longer files, and open an intervention session when needed.
+                            </DialogDescription>
+                          </DialogHeader>
+                        </div>
 
-                      <div className="overflow-auto pr-1 pb-1">
+                        <div className="flex-1 overflow-y-auto overflow-x-hidden px-5 py-4 min-h-0">
                         {studentsWithSnapshots.length > 0 ? (
-                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 items-start">
                             {studentsWithSnapshots.map((student) => (
                               <div key={`wall_${student.email}`} className="rounded-xl border border-slate-800/70 bg-slate-950/50 p-3 space-y-2.5">
                                 <div className="flex items-start justify-between gap-2">
@@ -1307,10 +1312,10 @@ export default function FacultyDashboard() {
                                 <div className="rounded-lg border border-slate-800/70 bg-slate-950/70 p-2">
                                   {student.lastCode ? (
                                     <CodePreview
-                                      code={student.lastCode.slice(0, 1800)}
+                                      code={student.lastCode}
                                       language={student.lastLanguage}
-                                      maxLines={34}
-                                      heightClass="max-h-36"
+                                      maxLines={120}
+                                      heightClass="h-56"
                                     />
                                   ) : (
                                     <p className="text-[10px] text-slate-600">Waiting for first code snapshot...</p>
@@ -1352,6 +1357,7 @@ export default function FacultyDashboard() {
                             <p className="text-[10px] text-slate-600 mt-1">As students type or run code, cards will appear here automatically.</p>
                           </div>
                         )}
+                        </div>
                       </div>
                     </DialogContent>
                   </Dialog>

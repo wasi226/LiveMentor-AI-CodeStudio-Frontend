@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { MessageSquare, Sparkles, Terminal, ArrowLeft, PanelLeftClose, PanelLeftOpen, CheckCircle2, History } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import CodeEditor, { DEFAULT_CODE_SNIPPETS } from '@/components/classroom/CodeEditor';
 import ChatPanel from '@/components/classroom/ChatPanel';
@@ -119,10 +119,12 @@ export default function Classroom() {
   const urlParams = new URLSearchParams(globalThis.location.search);
   const classroomId = urlParams.get('id');
   const interventionRoomId = urlParams.get('room');
+  const returnTo = urlParams.get('returnTo');
   const { user, getAuthHeaders } = useAuth();
   const navigate = useNavigate();
   const [resolvedRoomId, setResolvedRoomId] = useState(interventionRoomId || null);
   const roomType = resolvedRoomId ? 'intervention' : 'classroom';
+  const interventionReturnTarget = returnTo || (classroomId ? `/faculty-dashboard?classroomId=${encodeURIComponent(classroomId)}` : '/faculty-dashboard');
 
   const [code, setCode] = useState(DEFAULT_CODE_SNIPPETS.javascript);
   const [language, setLanguage] = useState('javascript');
@@ -273,6 +275,28 @@ export default function Classroom() {
     void resolveActiveInterventionRoom();
   }, [classroomId, user?.email, interventionRoomId, getAuthHeaders]);
 
+  const handleExitRoom = async () => {
+    if (roomType !== 'intervention') {
+      navigate('/student-dashboard');
+      return;
+    }
+
+    const roomIdToClose = resolvedRoomId || interventionRoomId;
+
+    if (classroomId && roomIdToClose) {
+      try {
+        await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/interventions/${encodeURIComponent(roomIdToClose)}/close`, {
+          method: 'POST',
+          headers: getAuthHeaders()
+        });
+      } catch (error) {
+        console.warn('Failed to close intervention room before leaving:', error);
+      }
+    }
+
+    navigate(interventionReturnTarget, { replace: true });
+  };
+
   useEffect(() => {
     if (user?.email && classroomId) {
       connect(classroomId, user, {
@@ -407,7 +431,7 @@ export default function Classroom() {
       }
 
       setResolvedRoomId(null);
-      navigate(`/classroom?id=${classroomId}`, { replace: true });
+      navigate(interventionReturnTarget, { replace: true });
     });
 
     const unsubscribeTerminalStarted = on(COLLABORATION_EVENTS.TERMINAL_STARTED, () => {
@@ -837,13 +861,16 @@ export default function Classroom() {
       {/* IDE Title bar */}
       <div className="h-11 border-b border-slate-800/50 bg-[#070c14] backdrop-blur flex items-center justify-between px-2 sm:px-4 flex-shrink-0 gap-2">
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-          <Link
-            to="/student-dashboard"
+          <button
+            type="button"
+            onClick={handleExitRoom}
             className="flex items-center gap-1.5 text-slate-500 hover:text-slate-300 transition-colors group"
           >
             <ArrowLeft style={{ width: 14, height: 14 }} className="group-hover:-translate-x-0.5 transition-transform" />
-            <span className="text-[11px] font-medium hidden sm:block">Back</span>
-          </Link>
+            <span className="text-[11px] font-medium hidden sm:block">
+              {roomType === 'intervention' ? 'End Intervention' : 'Back'}
+            </span>
+          </button>
 
           <div className="w-px h-4 bg-slate-800 hidden sm:block" />
 
