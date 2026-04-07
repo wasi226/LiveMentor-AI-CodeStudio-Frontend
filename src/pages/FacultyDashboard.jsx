@@ -1,7 +1,8 @@
 import React, { useMemo, useState, useEffect } from 'react';
+import PropTypes from 'prop-types';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { Plus, BookOpen, Users, BarChart3, AlertTriangle, Copy, Check, Hash, TrendingUp, LogOut, Activity, Eye, Code2, XCircle } from 'lucide-react';
+import { Plus, BookOpen, Users, BarChart3, AlertTriangle, Copy, Check, Hash, TrendingUp, LogOut, Activity, Eye, Code2, XCircle, LayoutGrid } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
@@ -11,6 +12,7 @@ import StatCard from '@/components/ui-custom/StatCard';
 import ClassroomCard from '@/components/ui-custom/ClassroomCard';
 import TopBar from '@/components/ui-custom/TopBar';
 import { useAuth } from '@/lib/AuthContext';
+import { getAuthToken } from '@/lib/authStorage';
 import moment from 'moment';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
@@ -63,6 +65,151 @@ const formatActivityType = (type) => {
   return labels[type] || type;
 };
 
+const detectInlineIssues = (code, language) => {
+  const source = String(code || '');
+  if (!source.trim()) {
+    return [];
+  }
+
+  const patternsByLanguage = {
+    java: [
+      {
+        regex: /\bSystem\.out\.(pirntln|prnitln|printn|prinltn|pritnln)\b/g,
+        message: 'Did you mean System.out.println ?'
+      },
+      {
+        regex: /\bSytem\.out\.println\b/g,
+        message: 'Did you mean System.out.println ?'
+      }
+    ],
+    javascript: [
+      {
+        regex: /\bconsole\.(lg|olg|logg)\b/g,
+        message: 'Did you mean console.log ?'
+      }
+    ],
+    typescript: [
+      {
+        regex: /\bconsole\.(lg|olg|logg)\b/g,
+        message: 'Did you mean console.log ?'
+      }
+    ]
+  };
+
+  const normalizedLanguage = String(language || '').toLowerCase();
+  const diagnostics = [];
+  const lines = source.split('\n');
+
+  lines.forEach((line, lineIndex) => {
+    const activePatterns = patternsByLanguage[normalizedLanguage] || [];
+
+    activePatterns.forEach(({ regex, message }) => {
+      for (const match of line.matchAll(regex)) {
+        const token = String(match[0] || '');
+        if (!token) {
+          continue;
+        }
+
+        diagnostics.push({
+          line: lineIndex + 1,
+          start: match.index || 0,
+          end: (match.index || 0) + token.length,
+          token,
+          message
+        });
+      }
+    });
+  });
+
+  return diagnostics;
+};
+
+const renderLineWithIssues = (line, issues = [], keyPrefix = 'line') => {
+  if (!issues.length) {
+    return <span>{line || ' '}</span>;
+  }
+
+  const sorted = [...issues].sort((a, b) => a.start - b.start);
+  const parts = [];
+  let cursor = 0;
+
+  sorted.forEach((issue, index) => {
+    if (issue.start > cursor) {
+      parts.push(
+        <span key={`${keyPrefix}_plain_${index}_${cursor}`}>
+          {line.slice(cursor, issue.start)}
+        </span>
+      );
+    }
+
+    const highlightedToken = line.slice(issue.start, issue.end) || issue.token;
+    parts.push(
+      <span
+        key={`${keyPrefix}_issue_${index}_${issue.start}`}
+        className="underline decoration-rose-400 decoration-2 underline-offset-2 bg-rose-500/10 rounded-[2px]"
+        title={issue.message}
+      >
+        {highlightedToken}
+      </span>
+    );
+
+    cursor = Math.max(cursor, issue.end);
+  });
+
+  if (cursor < line.length) {
+    parts.push(
+      <span key={`${keyPrefix}_tail_${cursor}`}>
+        {line.slice(cursor)}
+      </span>
+    );
+  }
+
+  return parts;
+};
+
+function CodePreview({ code, language, maxLines = 40, heightClass = 'max-h-40' }) {
+  const safeCode = String(code || '');
+
+  const diagnostics = useMemo(
+    () => detectInlineIssues(safeCode, language),
+    [safeCode, language]
+  );
+
+  const issueMap = useMemo(() => {
+    const map = new Map();
+
+    diagnostics.forEach((issue) => {
+      const list = map.get(issue.line) || [];
+      list.push(issue);
+      map.set(issue.line, list);
+    });
+
+    return map;
+  }, [diagnostics]);
+
+  const lines = safeCode.split('\n').slice(0, maxLines);
+
+  return (
+    <div className={`text-[10px] leading-4 text-slate-300 overflow-auto ${heightClass}`}>
+      {lines.map((line, index) => {
+        const lineNumber = index + 1;
+        const lineIssues = issueMap.get(lineNumber) || [];
+
+        return (
+          <div key={`preview_line_${lineNumber}`} className="font-mono whitespace-pre">
+            {renderLineWithIssues(line || ' ', lineIssues, `preview_${lineNumber}`)}
+          </div>
+        );
+      })}
+      {diagnostics.length > 0 && (
+        <p className="text-[10px] text-rose-300 mt-2 border-t border-rose-500/20 pt-1.5">
+          Potential issue: {diagnostics[0].message} (line {diagnostics[0].line})
+        </p>
+      )}
+    </div>
+  );
+}
+
 // eslint-disable-next-line sonarjs/cognitive-complexity
 export default function FacultyDashboard() {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -73,11 +220,13 @@ export default function FacultyDashboard() {
   const [studentActivity, setStudentActivity] = useState({});
   const [presenceMap, setPresenceMap] = useState({});
   const [inspectedStudentEmail, setInspectedStudentEmail] = useState('');
+  const [isCodeWallOpen, setIsCodeWallOpen] = useState(false);
   const [activityFilters, setActivityFilters] = useState({
     onlyErrors: false,
     onlyActive: false,
     topStruggling: false
   });
+  const [selectedSubmission, setSelectedSubmission] = useState(null);
   const [form, setForm] = useState({ name: '', description: '', language: 'javascript', max_students: 30 });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -146,6 +295,40 @@ export default function FacultyDashboard() {
     refetchInterval: 15000,
   });
 
+  const { data: allAssignments = [] } = useQuery({
+    queryKey: ['facultyAssignments', classrooms.map((c) => c.id).join(',')],
+    queryFn: async () => {
+      if (!classrooms.length) {
+        return [];
+      }
+
+      const assignmentResponses = await Promise.all(
+        classrooms.map(async (classroom) => {
+          const response = await fetch(
+            `${API_BASE_URL}/api/assignments?classroom_id=${encodeURIComponent(classroom.id)}&limit=200&sort=desc&sortBy=createdAt`,
+            { headers: getAuthHeaders() }
+          );
+
+          if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+            throw new Error('Your session is invalid. Please sign in again.');
+          }
+
+          if (!response.ok) {
+            return [];
+          }
+
+          const payload = await response.json().catch(() => ({}));
+          return payload.assignments || [];
+        })
+      );
+
+      return assignmentResponses.flat();
+    },
+    enabled: !!user && classrooms.length > 0,
+    retry: false,
+    refetchInterval: 20000
+  });
+
   useEffect(() => {
     if (!classrooms.length) {
       setSelectedClassroomId('');
@@ -162,6 +345,28 @@ export default function FacultyDashboard() {
     () => classrooms.find((classroom) => classroom.id === selectedClassroomId) || null,
     [classrooms, selectedClassroomId]
   );
+
+  const assignmentTitleById = useMemo(() => {
+    const map = new Map();
+    allAssignments.forEach((assignment) => {
+      const id = assignment.id || assignment._id;
+      if (id) {
+        map.set(String(id), assignment.title || 'Untitled Assignment');
+      }
+    });
+    return map;
+  }, [allAssignments]);
+
+  const recentSubmittedForSelectedClassroom = useMemo(() => {
+    return allSubmissions
+      .filter((submission) => String(submission.classroom_id) === String(selectedClassroomId))
+      .sort((a, b) => {
+        const aTime = new Date(a.submitted_at || a.created_at || a.created_date || 0).getTime();
+        const bTime = new Date(b.submitted_at || b.created_at || b.created_date || 0).getTime();
+        return bTime - aTime;
+      })
+      .slice(0, 20);
+  }, [allSubmissions, selectedClassroomId]);
 
   const { data: persistedActivity } = useQuery({
     queryKey: [
@@ -384,7 +589,7 @@ export default function FacultyDashboard() {
   };
 
   useEffect(() => {
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
 
     if (!token || !user?.email || !selectedClassroomId) {
       setIsRealtimeConnected(false);
@@ -559,6 +764,10 @@ export default function FacultyDashboard() {
   }, [selectedClassroomStudents, studentActivity, presenceMap, selectedClassroom?.language, activityFilters]);
 
   const inspectedStudent = monitoredStudents.find((student) => student.email === inspectedStudentEmail) || monitoredStudents[0] || null;
+  const studentsWithSnapshots = monitoredStudents.filter((student) =>
+    Boolean(student.lastCode) || Boolean(student.lastError) || student.totalEvents > 0
+  );
+
   const liveStudentsList = (() => {
     if (!selectedClassroom) {
       return null;
@@ -927,6 +1136,82 @@ export default function FacultyDashboard() {
               </div>
             </div>
 
+            {/* Submission Review */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-[14px] font-semibold text-white">Submission Review</h2>
+                <span className="text-[10px] text-slate-500">{recentSubmittedForSelectedClassroom.length} latest</span>
+              </div>
+
+              <div className="rounded-xl border border-slate-800/60 bg-slate-900/20 p-3 space-y-2 max-h-72 overflow-auto">
+                {recentSubmittedForSelectedClassroom.length > 0 ? (
+                  recentSubmittedForSelectedClassroom.map((submission) => {
+                    const submissionId = submission.id || submission._id;
+                    const assignmentId = submission.assignment_id;
+                    const assignmentTitle = assignmentTitleById.get(String(assignmentId)) || 'Assignment';
+                    const submittedAt = submission.submitted_at || submission.created_at || submission.created_date;
+
+                    return (
+                      <button
+                        key={`submission_preview_${submissionId}`}
+                        onClick={() => setSelectedSubmission(submission)}
+                        className="w-full text-left rounded-lg border border-slate-800/50 bg-slate-900/40 px-2.5 py-2 hover:bg-slate-800/35 transition-colors"
+                      >
+                        <p className="text-[11px] font-semibold text-slate-200 truncate">{submission.student_email}</p>
+                        <p className="text-[10px] text-slate-500 truncate mt-0.5">{assignmentTitle}</p>
+                        <div className="flex items-center justify-between mt-1.5">
+                          <span className="text-[10px] text-slate-400">{submission.language}</span>
+                          <span className="text-[10px] text-slate-600">{submittedAt ? moment(submittedAt).format('MMM D, h:mm A') : 'N/A'}</span>
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className="text-[11px] text-slate-600">No submissions yet for selected classroom.</p>
+                )}
+              </div>
+
+              <Dialog open={Boolean(selectedSubmission)} onOpenChange={(open) => {
+                if (!open) {
+                  setSelectedSubmission(null);
+                }
+              }}>
+                <DialogContent className="bg-[#0d1117] border-slate-800 text-white max-w-4xl w-[95vw] max-h-[85vh] overflow-hidden">
+                  <DialogHeader>
+                    <DialogTitle className="text-[15px]">Submitted Code Details</DialogTitle>
+                    <DialogDescription className="text-slate-500 text-[12px]">
+                      {selectedSubmission
+                        ? `${selectedSubmission.student_email} • ${assignmentTitleById.get(String(selectedSubmission.assignment_id)) || 'Assignment'}`
+                        : ''}
+                    </DialogDescription>
+                  </DialogHeader>
+
+                  {selectedSubmission && (
+                    <div className="space-y-3 overflow-auto pr-1 pb-1">
+                      <div className="grid grid-cols-2 gap-2 text-[11px]">
+                        <div className="rounded-lg border border-slate-800/60 bg-slate-900/40 px-2.5 py-2">
+                          <p className="text-slate-500">Submitted At</p>
+                          <p className="text-slate-200 mt-0.5">
+                            {selectedSubmission.submitted_at || selectedSubmission.created_at || selectedSubmission.created_date
+                              ? moment(selectedSubmission.submitted_at || selectedSubmission.created_at || selectedSubmission.created_date).format('MMMM D, YYYY h:mm:ss A')
+                              : 'N/A'}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-slate-800/60 bg-slate-900/40 px-2.5 py-2">
+                          <p className="text-slate-500">Status / Score</p>
+                          <p className="text-slate-200 mt-0.5">{selectedSubmission.status || 'draft'} / {selectedSubmission.score ?? 0}%</p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-slate-800/70 bg-slate-950/70 p-2.5">
+                        <pre className="text-[11px] leading-5 text-slate-300 whitespace-pre-wrap max-h-[50vh] overflow-auto">{selectedSubmission.code || 'No code submitted.'}</pre>
+                      </div>
+                    </div>
+                  )}
+                </DialogContent>
+              </Dialog>
+            </div>
+
             {/* Live Activity Monitor */}
             <div>
               <div className="flex items-center justify-between mb-3">
@@ -976,6 +1261,101 @@ export default function FacultyDashboard() {
                 </div>
 
                 {liveStudentsList}
+
+                {selectedClassroom && (
+                  <Dialog open={isCodeWallOpen} onOpenChange={setIsCodeWallOpen}>
+                    <DialogTrigger asChild>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full h-8 text-[11px] border-indigo-500/30 bg-indigo-500/10 text-indigo-100 hover:bg-indigo-500/20"
+                      >
+                        <LayoutGrid style={{ width: 12, height: 12 }} /> Open Live Code Wall
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="bg-[#0d1117] border-slate-800 text-white max-w-6xl w-[95vw] max-h-[85vh] overflow-hidden">
+                      <DialogHeader>
+                        <DialogTitle className="text-[15px]">Live Code Wall · {selectedClassroom.name}</DialogTitle>
+                        <DialogDescription className="text-slate-500 text-[12px]">
+                          See every student's latest code and jump into intervention in one click.
+                        </DialogDescription>
+                      </DialogHeader>
+
+                      <div className="overflow-auto pr-1 pb-1">
+                        {studentsWithSnapshots.length > 0 ? (
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                            {studentsWithSnapshots.map((student) => (
+                              <div key={`wall_${student.email}`} className="rounded-xl border border-slate-800/70 bg-slate-950/50 p-3 space-y-2.5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="text-[12px] font-semibold text-slate-200 truncate">{student.name}</p>
+                                    <p className="text-[10px] text-slate-500 truncate">{student.email}</p>
+                                  </div>
+                                  <div className="flex items-center gap-2 flex-shrink-0">
+                                    <span className={`w-2 h-2 rounded-full ${student.isOnline ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                                    <span className="text-[10px] text-slate-500">{student.lastLanguage}</span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between text-[10px]">
+                                  <span className="text-slate-500">{student.totalEvents} events</span>
+                                  <span className={student.problemsCount > 0 ? 'text-rose-300' : 'text-emerald-300'}>
+                                    {student.problemsCount > 0 ? `${student.problemsCount} issues` : 'Healthy'}
+                                  </span>
+                                </div>
+
+                                <div className="rounded-lg border border-slate-800/70 bg-slate-950/70 p-2">
+                                  {student.lastCode ? (
+                                    <CodePreview
+                                      code={student.lastCode.slice(0, 1800)}
+                                      language={student.lastLanguage}
+                                      maxLines={34}
+                                      heightClass="max-h-36"
+                                    />
+                                  ) : (
+                                    <p className="text-[10px] text-slate-600">Waiting for first code snapshot...</p>
+                                  )}
+                                </div>
+
+                                {student.lastError && (
+                                  <div className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2">
+                                    <p className="text-[10px] text-rose-200 whitespace-pre-wrap max-h-20 overflow-auto">{student.lastError}</p>
+                                  </div>
+                                )}
+
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => {
+                                      setInspectedStudentEmail(student.email);
+                                      setIsCodeWallOpen(false);
+                                    }}
+                                    variant="outline"
+                                    className="h-7 text-[10px] px-2 border-slate-700 bg-slate-900 hover:bg-slate-800"
+                                  >
+                                    <Eye style={{ width: 10, height: 10 }} /> Inspect
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleIntervene(student.email)}
+                                    className="h-7 text-[10px] px-2 bg-indigo-600 hover:bg-indigo-500"
+                                  >
+                                    <Activity style={{ width: 10, height: 10 }} /> Intervene
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="rounded-lg border border-slate-800/70 bg-slate-900/35 px-3 py-6 text-center">
+                            <p className="text-[12px] text-slate-500">No student activity snapshots yet.</p>
+                            <p className="text-[10px] text-slate-600 mt-1">As students type or run code, cards will appear here automatically.</p>
+                          </div>
+                        )}
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                )}
               </div>
             </div>
 
@@ -1023,7 +1403,12 @@ export default function FacultyDashboard() {
 
                     <div className="rounded-lg border border-slate-800/70 bg-slate-950/60 p-2.5">
                       {inspectedStudent.lastCode ? (
-                        <pre className="text-[10px] leading-4 text-slate-300 whitespace-pre-wrap max-h-40 overflow-auto">{inspectedStudent.lastCode.slice(0, 2400)}</pre>
+                        <CodePreview
+                          code={inspectedStudent.lastCode.slice(0, 2400)}
+                          language={inspectedStudent.lastLanguage}
+                          maxLines={44}
+                          heightClass="max-h-40"
+                        />
                       ) : (
                         <p className="text-[10px] text-slate-600">No code snapshots yet. It will appear when the student starts typing.</p>
                       )}
@@ -1064,3 +1449,10 @@ export default function FacultyDashboard() {
     </div>
   );
 }
+
+CodePreview.propTypes = {
+  code: PropTypes.string,
+  language: PropTypes.string,
+  maxLines: PropTypes.number,
+  heightClass: PropTypes.string
+};

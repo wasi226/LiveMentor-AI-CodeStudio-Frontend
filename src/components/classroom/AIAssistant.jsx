@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, Send, User, Zap } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { getAuthToken } from '@/lib/authStorage';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
@@ -31,7 +32,7 @@ export default function AIAssistant({ code, language }) {
     setLoading(true);
 
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = getAuthToken();
       if (!token) {
         throw new Error('You must be logged in to use the AI assistant.');
       }

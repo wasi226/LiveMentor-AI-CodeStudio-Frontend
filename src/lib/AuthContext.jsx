@@ -1,4 +1,10 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
+import {
+  clearAuthToken,
+  getAuthToken,
+  initializeAuthTokenFromLegacyStorage,
+  setAuthToken
+} from './authStorage';
 
 const AuthContext = createContext();
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
@@ -10,7 +16,7 @@ export const AuthProvider = ({ children }) => {
   const [authError, setAuthError] = useState(null);
 
   const clearAuthState = (message = null) => {
-    localStorage.removeItem('auth_token');
+    clearAuthToken();
     setUser(null);
     setIsAuthenticated(false);
     setAuthError(message);
@@ -35,7 +41,8 @@ export const AuthProvider = ({ children }) => {
       setIsLoadingAuth(true);
       setAuthError(null);
       
-      const token = localStorage.getItem('auth_token');
+      initializeAuthTokenFromLegacyStorage();
+      const token = getAuthToken();
       if (!token) {
         setIsLoadingAuth(false);
         return;
@@ -86,7 +93,7 @@ export const AuthProvider = ({ children }) => {
       const data = await response.json().catch(() => ({}));
 
       if (response.ok && data.success) {
-        localStorage.setItem('auth_token', data.token);
+        setAuthToken(data.token);
         setUser(data.user);
         setIsAuthenticated(true);
         return { success: true, user: data.user };
@@ -155,7 +162,7 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     try {
-      const token = localStorage.getItem('auth_token');
+      const token = getAuthToken();
       
       if (token) {
         // Notify backend of logout
@@ -180,7 +187,7 @@ export const AuthProvider = ({ children }) => {
 
   // Helper function to get auth headers for API calls
   const getAuthHeaders = () => {
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     return token ? {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'

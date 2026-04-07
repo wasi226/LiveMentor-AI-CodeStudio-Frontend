@@ -9,6 +9,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { io } from 'socket.io-client';
 import { useQueryClient } from '@tanstack/react-query';
+import { getAuthToken } from '@/lib/authStorage';
 
 const CollaborationContext = createContext();
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
@@ -142,7 +143,7 @@ export const CollaborationProvider = ({ children }) => {
       return;
     }
 
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     if (!token) {
       console.error('Cannot connect to collaboration without auth token');
       return;

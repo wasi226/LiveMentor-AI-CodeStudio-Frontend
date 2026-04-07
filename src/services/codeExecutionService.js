@@ -3,6 +3,8 @@
  * Delegates execution to the backend so provider credentials stay off the client.
  */
 
+import { getAuthToken } from '@/lib/authStorage';
+
 const viteEnv = /** @type {any} */ (import.meta)?.env || {};
 const API_BASE_URL = viteEnv.VITE_API_BASE_URL || 'http://localhost:3001';
 
@@ -126,7 +128,7 @@ class CodeExecutionService {
       };
     }
 
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
 
     if (!token) {
       return {

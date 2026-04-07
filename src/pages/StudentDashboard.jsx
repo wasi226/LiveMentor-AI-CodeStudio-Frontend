@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Plus, BookOpen, FileCode, TrendingUp, Activity, Clock, Zap, LogOut } from 'lucide-react';
@@ -21,6 +21,22 @@ const normalizeClassroom = (classroom) => ({
   created_date: classroom.created_date || classroom.createdAt || classroom.created_at,
   updated_date: classroom.updated_date || classroom.updatedAt || classroom.updated_at,
   max_students: classroom.max_students ?? classroom.maxStudents ?? 30,
+});
+
+const normalizeAssignment = (assignment, classroomId) => ({
+  ...assignment,
+  id: assignment.id || assignment._id,
+  classroom_id: assignment.classroom_id || classroomId,
+  due_date: assignment.due_date || assignment.dueDate || null,
+  status: assignment.is_published ? 'published' : 'draft'
+});
+
+const normalizeSubmission = (submission) => ({
+  ...submission,
+  id: submission.id || submission._id,
+  created_date: submission.created_date || submission.created_at || submission.createdAt,
+  updated_date: submission.updated_date || submission.updated_at || submission.updatedAt,
+  submitted_at: submission.submitted_at || submission.submittedAt || submission.created_date || submission.created_at
 });
 
 const parseApiResponse = async (response) => {
@@ -71,14 +87,59 @@ export default function StudentDashboard() {
   });
 
   const { data: assignments = [] } = useQuery({
-    queryKey: ['studentAssignments'],
-    queryFn: () => Promise.resolve([]),
+    queryKey: ['studentAssignments', classrooms.map((c) => c.id).join(',')],
+    queryFn: async () => {
+      if (!classrooms.length) {
+        return [];
+      }
+
+      const assignmentResponses = await Promise.all(
+        classrooms.map(async (classroom) => {
+          const response = await fetch(
+            `${API_BASE_URL}/api/assignments?classroom_id=${encodeURIComponent(classroom.id)}&limit=100&sort=desc&sortBy=createdAt`,
+            { headers: getAuthHeaders() }
+          );
+
+          if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+            throw new Error('Your session is invalid. Please sign in again.');
+          }
+
+          if (!response.ok) {
+            return [];
+          }
+
+          const payload = await response.json().catch(() => ({}));
+          return (payload.assignments || []).map((assignment) => normalizeAssignment(assignment, classroom.id));
+        })
+      );
+
+      return assignmentResponses.flat();
+    },
+    enabled: !!user && classrooms.length > 0,
+    retry: false,
   });
 
   const { data: submissions = [] } = useQuery({
     queryKey: ['studentSubmissions', user?.email],
-    queryFn: () => Promise.resolve([]),
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE_URL}/api/submissions?limit=200&sort=desc&sortBy=createdAt`, {
+        headers: getAuthHeaders()
+      });
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      return (payload.submissions || []).map(normalizeSubmission);
+    },
     enabled: !!user,
+    retry: false,
+    refetchInterval: 15000,
   });
 
   const joinMutation = useMutation({
@@ -141,6 +202,27 @@ export default function StudentDashboard() {
 
     return submission.score >= 70 ? 'bg-emerald-400' : 'bg-amber-400';
   };
+
+  const classroomNameById = useMemo(() => {
+    const map = new Map();
+    classrooms.forEach((classroom) => {
+      if (classroom?.id) {
+        map.set(String(classroom.id), classroom.name || 'Classroom');
+      }
+    });
+    return map;
+  }, [classrooms]);
+
+  const assignmentTitleById = useMemo(() => {
+    const map = new Map();
+    assignments.forEach((assignment) => {
+      const assignmentId = assignment?.id || assignment?._id;
+      if (assignmentId) {
+        map.set(String(assignmentId), assignment.title || 'Assignment');
+      }
+    });
+    return map;
+  }, [assignments]);
 
   let classroomsContent;
 
@@ -261,7 +343,14 @@ export default function StudentDashboard() {
                   <span className="text-[11px] text-slate-600">{assignments.length} open</span>
                 </div>
                 <div className="grid sm:grid-cols-2 gap-2.5">
-                  {assignments.slice(0, 4).map((a, i) => <AssignmentCard key={a.id} assignment={a} delay={i * 0.07} />)}
+                  {assignments.slice(0, 4).map((a, i) => (
+                    <AssignmentCard
+                      key={a.id}
+                      assignment={a}
+                      delay={i * 0.07}
+                      onClick={() => navigate(`/classroom?id=${encodeURIComponent(a.classroom_id)}`)}
+                    />
+                  ))}
                 </div>
               </div>
             )}
@@ -287,9 +376,12 @@ export default function StudentDashboard() {
                     <div className={`w-1.5 h-6 rounded-full flex-shrink-0 ${getSubmissionAccentClass(s)}`} />
                     <div className="flex-1 min-w-0">
                       <p className="text-[12px] text-slate-300 font-medium truncate">
-                        {s.language?.charAt(0).toUpperCase() + s.language?.slice(1)} Submission
+                        {assignmentTitleById.get(String(s.assignment_id || '')) || 'Assignment Submission'}
                       </p>
-                      <p className="text-[10px] text-slate-600 mt-0.5">{moment(s.created_date).fromNow()}</p>
+                      <p className="text-[12px] text-slate-300 font-medium truncate">
+                        {classroomNameById.get(String(s.classroom_id || '')) || 'Classroom'} • {s.language?.charAt(0).toUpperCase() + s.language?.slice(1)}
+                      </p>
+                      <p className="text-[10px] text-slate-600 mt-0.5">{moment(s.submitted_at || s.created_date).fromNow()}</p>
                     </div>
                     {s.score !== undefined && s.score !== null && (
                       <span className={`text-[12px] font-bold tabular-nums ${s.score >= 70 ? 'text-emerald-400' : 'text-amber-400'}`}>

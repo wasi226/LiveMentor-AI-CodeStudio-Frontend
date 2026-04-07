@@ -4,6 +4,8 @@
  * and provides early warning alerts for struggling students
  */
 
+import { getAuthToken } from '@/lib/authStorage';
+
 // Performance categories and thresholds
 export const PERFORMANCE_CATEGORIES = {
   WEAK: { min: 0, max: 40, color: '#ef4444', label: 'Needs Support' },
@@ -57,7 +59,7 @@ class PerformanceAnalytics {
   }
 
   getAuthHeaders() {
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
 
     return token
       ? {
