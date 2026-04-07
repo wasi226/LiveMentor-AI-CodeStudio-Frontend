@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { Play, Send, Copy, RotateCcw, ChevronDown, Check, Loader2, Bug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -19,7 +19,7 @@ const languages = [
   { value: 'rust',       label: 'Rust',       ext: 'rs',   color: '#fb7185' },
 ];
 
-const defaultCode = {
+export const DEFAULT_CODE_SNIPPETS = {
   javascript: `// Welcome to CodeClass.ai\nfunction solution(nums) {\n  // Write your solution here\n  \n}\n\nconsole.log(solution([1, 2, 3]));`,
   python:     `# Welcome to CodeClass.ai\ndef solution(nums):\n    # Write your solution here\n    pass\n\nprint(solution([1, 2, 3]))`,
   java:       `// Welcome to CodeClass.ai\npublic class Solution {\n    public static void main(String[] args) {\n        // Write your solution here\n    }\n}`,
@@ -29,13 +29,26 @@ const defaultCode = {
   rust:       `// Welcome to CodeClass.ai\nfn main() {\n    // Write your solution here\n    println!("Hello, world!");\n}`,
 };
 
-export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning }) {
+export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning, errorLineNumbers = [] }) {
   const [copied, setCopied] = useState(false);
   const [showVisualizer, setShowVisualizer] = useState(false);
   const textareaRef = useRef(null);
   const currentLang = languages.find(l => l.value === language) || languages[0];
-  const displayCode = code !== undefined && code !== '' ? code : (defaultCode[language] || defaultCode.javascript);
+  const displayCode = typeof code === 'string'
+    ? code
+    : (DEFAULT_CODE_SNIPPETS[language] || DEFAULT_CODE_SNIPPETS.javascript);
   const lineCount = displayCode.split('\n').length;
+  const highlightedErrorLines = useMemo(() => {
+    return new Set(
+      (Array.isArray(errorLineNumbers) ? errorLineNumbers : [])
+        .map(Number)
+        .filter((lineNumber) => Number.isFinite(lineNumber) && lineNumber > 0)
+    );
+  }, [errorLineNumbers]);
+  const visibleLineNumbers = useMemo(() => {
+    const totalLines = Math.max(lineCount, 24);
+    return Array.from({ length: totalLines }, (_, index) => index + 1);
+  }, [lineCount]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(displayCode);
@@ -44,7 +57,7 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
   };
 
   const handleReset = () => {
-    onCodeChange(defaultCode[language] || defaultCode.javascript);
+    onCodeChange(DEFAULT_CODE_SNIPPETS[language] || DEFAULT_CODE_SNIPPETS.javascript);
   };
 
   const emitCursorChange = (target) => {
@@ -104,7 +117,10 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
               {languages.map(lang => (
                 <DropdownMenuItem
                   key={lang.value}
-                  onClick={() => { onLanguageChange(lang.value); onCodeChange(defaultCode[lang.value]); }}
+                  onClick={() => {
+                    onLanguageChange(lang.value);
+                    onCodeChange(DEFAULT_CODE_SNIPPETS[lang.value]);
+                  }}
                   className="text-slate-300 hover:text-white focus:text-white focus:bg-slate-800 text-[12px] gap-2.5"
                 >
                   <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: lang.color }} />
@@ -142,9 +158,16 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
       <div className="flex flex-1 overflow-hidden">
         {/* Line numbers */}
         <div className="select-none border-r border-slate-800/40 bg-slate-950/40 py-4 min-w-[44px] flex-shrink-0 overflow-hidden">
-          {[...Array(Math.max(lineCount, 24))].map((_, i) => (
-            <div key={i} className="text-[11px] text-slate-700 font-mono leading-6 h-6 pr-3 text-right tabular-nums">
-              {i + 1}
+          {visibleLineNumbers.map((lineNumber) => (
+            <div
+              key={lineNumber}
+              className={`text-[11px] font-mono leading-6 h-6 pr-2 pl-1 text-right tabular-nums flex items-center justify-end gap-1 ${highlightedErrorLines.has(lineNumber) ? 'text-rose-300 bg-rose-500/12 border-r border-rose-500/50' : 'text-slate-700'}`}
+              title={highlightedErrorLines.has(lineNumber) ? 'Error detected near this line' : ''}
+            >
+              {highlightedErrorLines.has(lineNumber) && (
+                <span className="w-1 h-1 rounded-full bg-rose-400 flex-shrink-0" />
+              )}
+              <span>{lineNumber}</span>
             </div>
           ))}
         </div>

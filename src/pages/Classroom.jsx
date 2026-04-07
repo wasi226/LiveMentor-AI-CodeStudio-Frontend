@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { MessageSquare, Sparkles, Terminal, ArrowLeft, PanelLeftClose, PanelLeftOpen, CheckCircle2, History } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import CodeEditor from '@/components/classroom/CodeEditor';
+import CodeEditor, { DEFAULT_CODE_SNIPPETS } from '@/components/classroom/CodeEditor';
 import ChatPanel from '@/components/classroom/ChatPanel';
 import AIAssistant from '@/components/classroom/AIAssistant';
 import OutputPanel from '@/components/classroom/OutputPanel';
@@ -57,13 +57,77 @@ const normalizeMessage = (message) => {
   };
 };
 
+const extractErrorLineNumbers = (errorText) => {
+  const normalizedError = String(errorText || '');
+  if (!normalizedError.trim()) {
+    return [];
+  }
+
+  const lineMatches = [
+    ...normalizedError.matchAll(/line\s+(\d+)/gi),
+    ...normalizedError.matchAll(/:(\d+):(\d+)?/g),
+    ...normalizedError.matchAll(/\((\d+)\)/g)
+  ];
+
+  const uniqueLines = lineMatches
+    .map((match) => Number(match[1]))
+    .filter((lineNumber) => Number.isFinite(lineNumber) && lineNumber > 0);
+
+  return Array.from(new Set(uniqueLines)).slice(0, 15);
+};
+
+const codeLikelyNeedsInput = (sourceCode, language) => {
+  const text = String(sourceCode || '');
+  const normalizedLanguage = String(language || '').toLowerCase();
+
+  switch (normalizedLanguage) {
+    case 'java':
+      return /\bScanner\b|\bnextInt\s*\(|\bnextLine\s*\(|\bnextDouble\s*\(|\bnext\s*\(/.test(text);
+    case 'python':
+      return /\binput\s*\(/.test(text);
+    case 'cpp':
+    case 'c':
+      return /\bcin\s*>>|\bscanf\s*\(/.test(text);
+    case 'javascript':
+    case 'typescript':
+      return /process\.stdin|readline\.createInterface|fs\.readFileSync\s*\(\s*0\s*[,)]/.test(text);
+    case 'go':
+      return /fmt\.Scanf\s*\(|fmt\.Scan\s*\(|bufio\.NewScanner\s*\(/.test(text);
+    case 'rust':
+      return /std::io::stdin\s*\(\)|read_line\s*\(/.test(text);
+    default:
+      return false;
+  }
+};
+
+const isMissingInputRuntimeError = (errorText) => {
+  const normalizedError = String(errorText || '').toLowerCase();
+
+  return (
+    normalizedError.includes('nosuchelementexception') ||
+    normalizedError.includes('no line found') ||
+    normalizedError.includes('eoferror') ||
+    normalizedError.includes('end of file') ||
+    normalizedError.includes('unexpected eof') ||
+    normalizedError.includes('input mismatch')
+  );
+};
+
+const MISSING_INPUT_HELP = 'Program expected more input. Add all required values in Program Input (stdin) and run again.';
+
 export default function Classroom() {
   const urlParams = new URLSearchParams(globalThis.location.search);
   const classroomId = urlParams.get('id');
+  const interventionRoomId = urlParams.get('room');
   const { user, getAuthHeaders } = useAuth();
+  const navigate = useNavigate();
+  const [resolvedRoomId, setResolvedRoomId] = useState(interventionRoomId || null);
+  const roomType = resolvedRoomId ? 'intervention' : 'classroom';
 
-  const [code, setCode] = useState('');
+  const [code, setCode] = useState(DEFAULT_CODE_SNIPPETS.javascript);
   const [language, setLanguage] = useState('javascript');
+  const [executionInput, setExecutionInput] = useState('');
+  const [interactiveSessionActive, setInteractiveSessionActive] = useState(false);
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
   const [isRunning, setIsRunning] = useState(false);
@@ -72,6 +136,7 @@ export default function Classroom() {
   const [submitted, setSubmitted] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
   const [isMobileLayout, setIsMobileLayout] = useState(() => isMobileViewport());
+  const errorLineNumbers = useMemo(() => extractErrorLineNumbers(error), [error]);
   
   const codeChangeTimeout = useRef(null);
   const cursorSyncTimeout = useRef(null);
@@ -178,14 +243,48 @@ export default function Classroom() {
 
   // Connect to collaboration session when user and classroom are ready
   useEffect(() => {
+    setResolvedRoomId(interventionRoomId || null);
+  }, [interventionRoomId]);
+
+  useEffect(() => {
+    const resolveActiveInterventionRoom = async () => {
+      if (!user?.email || !classroomId || interventionRoomId) {
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/interventions/active`, {
+          headers: getAuthHeaders()
+        });
+
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = await response.json().catch(() => ({}));
+        if (payload?.room?.room_id) {
+          setResolvedRoomId(payload.room.room_id);
+        }
+      } catch (error) {
+        console.warn('Failed to resolve active intervention room:', error);
+      }
+    };
+
+    void resolveActiveInterventionRoom();
+  }, [classroomId, user?.email, interventionRoomId, getAuthHeaders]);
+
+  useEffect(() => {
     if (user?.email && classroomId) {
-      connect(classroomId, user);
+      connect(classroomId, user, {
+        roomId: resolvedRoomId,
+        roomType
+      });
     }
 
     return () => {
       disconnect();
     };
-  }, [user?.email, classroomId, connect, disconnect]);
+  }, [user?.email, classroomId, resolvedRoomId, roomType, connect, disconnect]);
 
   // Initialize version control and auto-save
   useEffect(() => {
@@ -210,7 +309,30 @@ export default function Classroom() {
     };
   }, [user?.email, classroomId]);
 
+  const appendUniqueChatMessage = (previousMessages, realtimeData) => {
+    const metadata = realtimeData.metadata || {};
+    const messageText = metadata.message || realtimeData.message;
+
+    if (!messageText) {
+      return previousMessages;
+    }
+
+    const message = normalizeMessage({
+      id: realtimeData.id,
+      sender_email: realtimeData.sender_email,
+      sender_name: realtimeData.sender_name,
+      message: messageText,
+      type: metadata.type || 'message',
+      metadata,
+      created_date: realtimeData.created_date
+    });
+
+    const exists = previousMessages.some((existing) => existing.id === message.id);
+    return exists ? previousMessages : [...previousMessages, message];
+  };
+
   // Set up collaboration event listeners
+  // eslint-disable-next-line sonarjs/no-nested-functions
   useEffect(() => {
     if (!isConnected) return;
 
@@ -238,47 +360,103 @@ export default function Classroom() {
 
     // Listen for execution events
     const unsubscribeExecution = on(COLLABORATION_EVENTS.EXECUTION_START, (data) => {
-      if (data.sender_email !== user?.email) {
+      const senderEmail = data?.sender_email;
+      if (!senderEmail || senderEmail === user?.email) {
+        return;
+      }
+
+      if (senderEmail !== user?.email) {
         setRightTab('output');
         // Show who is running code
-        setOutput(prev => `${prev}\n🔄 ${data.sender_name} is running code...`);
+        const senderName = data?.sender_name || senderEmail;
+        setOutput(prev => `${prev}\n🔄 ${senderName} is running code...`);
       }
     });
 
     const unsubscribeExecutionResult = on(COLLABORATION_EVENTS.EXECUTION_RESULT, (data) => {
-      if (data.sender_email !== user?.email && data.metadata) {
-        setRightTab('output');
-        if (data.metadata.success) {
-          setOutput(`🟢 ${data.sender_name}'s result:\n${data.metadata.output}`);
-          setError('');
-        } else {
-          setError(`🔴 ${data.sender_name}'s error:\n${data.metadata.error}`);
-          setOutput('');
-        }
+      const senderEmail = data?.sender_email;
+      const metadata = data?.metadata;
+
+      if (!senderEmail || senderEmail === user?.email || !metadata || typeof metadata !== 'object') {
+        return;
+      }
+
+      setRightTab('output');
+      if (metadata.success) {
+        const externalOutput = typeof metadata.output === 'string' ? metadata.output : '';
+        const senderName = data?.sender_name || senderEmail;
+        setOutput(`🟢 ${senderName}'s result:\n${externalOutput || 'Program executed successfully (no console output).'}`);
+        setError('');
+      } else {
+        const externalError = typeof metadata.error === 'string' ? metadata.error : 'Execution failed.';
+        const senderName = data?.sender_name || senderEmail;
+        setError(`🔴 ${senderName}'s error:\n${externalError}`);
+        setOutput('');
       }
     });
 
     const unsubscribeChatMessage = on(COLLABORATION_EVENTS.CHAT_MESSAGE, (data) => {
-      const metadata = data.metadata || {};
-      const messageText = metadata.message || data.message;
+      setChatMessages((previous) => appendUniqueChatMessage(previous, data));
+    });
 
-      if (!messageText) {
+    const unsubscribeInterventionClosed = on('intervention_closed', (data) => {
+      const closedRoomId = data?.metadata?.room_id;
+
+      if (!closedRoomId || closedRoomId !== resolvedRoomId || roomType !== 'intervention') {
         return;
       }
 
-      setChatMessages((previous) => {
-        const message = normalizeMessage({
-          id: data.id,
-          sender_email: data.sender_email,
-          sender_name: data.sender_name,
-          message: messageText,
-          type: metadata.type || 'message',
-          metadata,
-          created_date: data.created_date
-        });
+      setResolvedRoomId(null);
+      navigate(`/classroom?id=${classroomId}`, { replace: true });
+    });
 
-        const exists = previous.some((existing) => existing.id === message.id);
-        return exists ? previous : [...previous, message];
+    const unsubscribeTerminalStarted = on(COLLABORATION_EVENTS.TERMINAL_STARTED, () => {
+      setInteractiveSessionActive(true);
+      setIsRunning(true);
+      setRightTab('output');
+    });
+
+    const unsubscribeTerminalOutput = on(COLLABORATION_EVENTS.TERMINAL_OUTPUT, (payload) => {
+      const chunk = typeof payload?.chunk === 'string' ? payload.chunk : '';
+      const stream = payload?.stream;
+
+      if (!chunk) {
+        return;
+      }
+
+      if (stream === 'stderr') {
+        if (isMissingInputRuntimeError(chunk)) {
+          setError((previous) => {
+            const merged = `${previous || ''}${chunk}`;
+            return merged.includes(MISSING_INPUT_HELP) ? merged : `${merged}\n${MISSING_INPUT_HELP}`;
+          });
+          return;
+        }
+        setError((previous) => `${previous || ''}${chunk}`);
+        return;
+      }
+
+      setOutput((previous) => `${previous || ''}${chunk}`);
+    });
+
+    const unsubscribeTerminalError = on(COLLABORATION_EVENTS.TERMINAL_ERROR, (payload) => {
+      const message = typeof payload?.message === 'string' ? payload.message : 'Interactive terminal error.';
+      setError((previous = '') => (previous ? `${previous}\n${message}` : message));
+      setIsRunning(false);
+      setInteractiveSessionActive(false);
+    });
+
+    const unsubscribeTerminalEnded = on(COLLABORATION_EVENTS.TERMINAL_ENDED, (payload) => {
+      const exitCode = Number.isFinite(payload?.exitCode) ? payload.exitCode : 0;
+      const signal = payload?.signal ? ` (${payload.signal})` : '';
+
+      setIsRunning(false);
+      setInteractiveSessionActive(false);
+
+      setOutput((previous = '') => {
+        const normalized = previous;
+        const suffix = `\n\n[Process exited with code ${exitCode}${signal}]`;
+        return normalized.includes('[Process exited with code') ? normalized : `${normalized}${suffix}`;
       });
     });
 
@@ -287,7 +465,12 @@ export default function Classroom() {
       unsubscribeLanguage, 
       unsubscribeExecution,
       unsubscribeExecutionResult,
-      unsubscribeChatMessage
+      unsubscribeChatMessage,
+      unsubscribeInterventionClosed,
+      unsubscribeTerminalStarted,
+      unsubscribeTerminalOutput,
+      unsubscribeTerminalError,
+      unsubscribeTerminalEnded
     );
 
     return () => {
@@ -296,8 +479,26 @@ export default function Classroom() {
   }, [isConnected, on, user, COLLABORATION_EVENTS]);
 
   useEffect(() => {
-    if (classroom?.language) setLanguage(classroom.language);
-  }, [classroom]);
+    if (!classroom?.language) {
+      return;
+    }
+
+    const normalizedLanguage = String(classroom.language).toLowerCase();
+    const nextSnippet = DEFAULT_CODE_SNIPPETS[normalizedLanguage] || DEFAULT_CODE_SNIPPETS.javascript;
+    const defaultSnippets = Object.values(DEFAULT_CODE_SNIPPETS);
+
+    setLanguage(normalizedLanguage);
+    setCode((previousCode) => {
+      const hasUserCode = typeof previousCode === 'string' && previousCode.trim().length > 0;
+      const isTemplateCode = defaultSnippets.includes(previousCode);
+
+      if (!hasUserCode || isTemplateCode) {
+        return nextSnippet;
+      }
+
+      return previousCode;
+    });
+  }, [classroom?.language]);
 
   const sendMessageMutation = useMutation({
     mutationFn: async (message) => {
@@ -364,38 +565,62 @@ export default function Classroom() {
     }
   };
 
+  const safeEmit = async (eventType, payload) => {
+    if (!isConnected) {
+      return;
+    }
+
+    try {
+      await emit(eventType, payload);
+    } catch (collaborationError) {
+      // Collaboration should never block local execution UX.
+      console.warn(`Failed to emit ${eventType}:`, collaborationError);
+    }
+  };
+
   // Enhanced run handler with collaboration
+  // eslint-disable-next-line sonarjs/cognitive-complexity
   const handleRun = async () => {
+    if (isRunning) {
+      return;
+    }
+
+    const codeToRun = typeof code === 'string' ? code : '';
+
+    if (!codeToRun.trim()) {
+      setRightTab('output');
+      setOutput('');
+      setError('Code is empty. Please write some code before running.');
+      return;
+    }
+
+    const stdinToUse = String(executionInput || '').replaceAll('\r\n', '\n');
+
     setIsRunning(true);
     setOutput('');
     setError('');
     setRightTab('output');
 
     // Notify other users that execution started
-    if (isConnected) {
-      await emit(COLLABORATION_EVENTS.EXECUTION_START, {
-        language,
-        timestamp: Date.now()
-      });
-    }
+    void safeEmit(COLLABORATION_EVENTS.EXECUTION_START, {
+      language,
+      timestamp: Date.now()
+    });
 
     try {
       // Validate code for security issues
-      const validation = codeExecutionService.validateCode(code, language);
+      const validation = codeExecutionService.validateCode(codeToRun, language);
       if (!validation.isValid) {
         const errorMsg = `Code validation failed:\n${validation.errors.join('\n')}`;
         setError(errorMsg);
         
         // Share error with other users
-        if (isConnected) {
-          await emit(COLLABORATION_EVENTS.EXECUTION_RESULT, {
-            success: false,
-            error: errorMsg,
-            timestamp: Date.now()
-          });
-        }
-        
-        setIsRunning(false);
+        void safeEmit(COLLABORATION_EVENTS.EXECUTION_RESULT, {
+          success: false,
+          error: errorMsg,
+          timestamp: Date.now()
+        });
+
         return;
       }
 
@@ -405,72 +630,165 @@ export default function Classroom() {
       }
 
       // Execute code securely
-      const result = await codeExecutionService.executeCode(code, language);
+      const result = await codeExecutionService.executeCode(codeToRun, language, stdinToUse);
+      console.log('[DEBUG] Classroom execution result:', {
+        success: result.success,
+        outputLength: result.output?.length || 0,
+        errorLength: result.error?.length || 0
+      });
+      const hasOutput = typeof result.output === 'string' && result.output.trim().length > 0;
+      const shouldDisplayOutput = result.success || (hasOutput && !result.error);
       
-      if (result.success) {
-        let outputText = result.output;
+      if (shouldDisplayOutput) {
+        const hasVisibleOutput = typeof result.output === 'string' && result.output.trim().length > 0;
+        let outputText = hasVisibleOutput
+          ? result.output
+          : 'Program executed successfully (no console output).';
+
         if (result.executionTime || result.memory) {
           outputText += `\n\n🔹 Execution Time: ${result.executionTime}ms | Memory: ${(result.memory / 1024).toFixed(2)}KB`;
         }
+
         setOutput(outputText);
+        setError('');
+        setRightTab('output');
         
         // Share successful result
-        if (isConnected) {
-          await emit(COLLABORATION_EVENTS.EXECUTION_RESULT, {
-            success: true,
-            output: outputText,
-            executionTime: result.executionTime,
-            memory: result.memory,
-            timestamp: Date.now()
-          });
-        }
+        void safeEmit(COLLABORATION_EVENTS.EXECUTION_RESULT, {
+          success: true,
+          output: outputText,
+          executionTime: result.executionTime,
+          memory: result.memory,
+          timestamp: Date.now()
+        });
       } else {
-        setError(result.error);
+        const executionErrorMessage = result.error || 'Execution completed without output. Check your code and try again.';
+        const missingInputDetected =
+          !stdinToUse.trim() &&
+          codeLikelyNeedsInput(codeToRun, language) &&
+          isMissingInputRuntimeError(executionErrorMessage);
+        const explanationText = typeof result.explanation === 'string' && result.explanation.trim().length > 0
+          ? `\n\nWhy this happened:\n${result.explanation}`
+          : '';
+        const failureOutput = typeof result.output === 'string' ? result.output.trim() : '';
+
+        if (missingInputDetected) {
+          setOutput(failureOutput);
+          setError('Program expected more input. Add required values in Program Input (stdin), then click Run Code again.');
+          setRightTab('output');
+          return;
+        }
+
+        setError(`${executionErrorMessage}${explanationText}`);
+        setOutput(failureOutput);
+        setRightTab('output');
         
         // Share error result
-        if (isConnected) {
-          await emit(COLLABORATION_EVENTS.EXECUTION_RESULT, {
-            success: false,
-            error: result.error,
-            timestamp: Date.now()
-          });
-        }
+        void safeEmit(COLLABORATION_EVENTS.EXECUTION_RESULT, {
+          success: false,
+          error: executionErrorMessage,
+          timestamp: Date.now()
+        });
       }
     } catch (error) {
       console.error('Code execution failed:', error);
       const errorMsg = `Execution failed: ${error.message}`;
       setError(errorMsg);
+      setOutput('');
+      setRightTab('output');
       
       // Share execution failure
-      if (isConnected) {
-        await emit(COLLABORATION_EVENTS.EXECUTION_RESULT, {
-          success: false,
-          error: errorMsg,
-          timestamp: Date.now()
-        });
-      }
+      void safeEmit(COLLABORATION_EVENTS.EXECUTION_RESULT, {
+        success: false,
+        error: errorMsg,
+        timestamp: Date.now()
+      });
+    } finally {
+      setIsRunning(false);
     }
-
-    setIsRunning(false);
   };
 
   const handleSubmit = async () => {
-    // Mock submission - disabled
-    console.log('Submission functionality is currently disabled');
-
-    // Save submission version for version control
-    if (user?.email && classroomId) {
-      await versionControl.saveSubmissionVersion(
-        classroomId, 
-        user.email, 
-        code, 
-        language, 
-        `manual_submission_${Date.now()}`
-      );
+    if (!user?.email || !classroomId) {
+      setError('You must be signed in to submit code.');
+      return;
     }
 
-    setSubmitted(true);
-    setTimeout(() => setSubmitted(false), 3000);
+    try {
+      const assignmentsResponse = await fetch(
+        `${API_BASE_URL}/api/assignments?classroom_id=${encodeURIComponent(classroomId)}&limit=1&sort=desc&sortBy=createdAt`,
+        { headers: getAuthHeaders() }
+      );
+
+      if (!assignmentsResponse.ok) {
+        const assignmentsErrorPayload = await assignmentsResponse.json().catch(() => ({}));
+        throw new Error(
+          assignmentsErrorPayload.message ||
+          assignmentsErrorPayload.error ||
+          'Unable to load the classroom assignment for submission.'
+        );
+      }
+
+      const assignmentsPayload = await assignmentsResponse.json().catch(() => ({}));
+      const assignment = (assignmentsPayload.assignments || [])[0];
+
+      if (!assignment?.id && !assignment?._id) {
+        throw new Error('No assignment is available for this classroom yet.');
+      }
+
+      const assignmentId = assignment.id || assignment._id;
+      const submissionResponse = await fetch(`${API_BASE_URL}/api/submissions`, {
+        method: 'POST',
+        headers: {
+          ...getAuthHeaders(),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          assignment_id: assignmentId,
+          classroom_id: classroomId,
+          code,
+          language
+        })
+      });
+
+      if (!submissionResponse.ok) {
+        const payload = await submissionResponse.json().catch(() => ({}));
+        throw new Error(payload.message || payload.error || 'Failed to create submission.');
+      }
+
+      const submissionPayload = await submissionResponse.json().catch(() => ({}));
+      const submissionId = submissionPayload?.submission?.id || submissionPayload?.submission?._id;
+
+      if (!submissionId) {
+        throw new Error('Submission was created but the server did not return an id.');
+      }
+
+      const submitResponse = await fetch(`${API_BASE_URL}/api/submissions/${submissionId}/submit`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+
+      if (!submitResponse.ok) {
+        const payload = await submitResponse.json().catch(() => ({}));
+        throw new Error(payload.message || payload.error || 'Failed to submit code.');
+      }
+
+      if (user?.email && classroomId) {
+        await versionControl.saveSubmissionVersion(
+          classroomId,
+          user.email,
+          code,
+          language,
+          `manual_submission_${Date.now()}`
+        );
+      }
+
+      setSubmitted(true);
+      setTimeout(() => setSubmitted(false), 3000);
+    } catch (submitError) {
+      console.error('Submission failed:', submitError);
+      setError(submitError.message || 'Failed to submit code.');
+    }
   };
 
   // Handle code restoration from version history
@@ -570,6 +888,22 @@ export default function Classroom() {
         )}
       </div>
 
+      {roomType === 'intervention' && (
+        <div className="border-b border-amber-500/20 bg-amber-500/10 px-3 sm:px-4 py-2 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-amber-200 uppercase tracking-[0.18em]">Private Intervention Active</p>
+            <p className="text-[10px] text-amber-100/80 truncate">
+              This session is private to the faculty and selected student.
+            </p>
+          </div>
+          <div className="hidden sm:flex items-center gap-2 text-[10px] text-amber-100/80">
+            <span className="px-2 py-1 rounded-full border border-amber-400/30 bg-amber-400/10">
+              Live private room
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* IDE body */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
         {/* Left: Participants */}
@@ -616,7 +950,8 @@ export default function Classroom() {
               onCursorChange={handleCursorChange}
               onRun={handleRun}
               onSubmit={handleSubmit}
-              isRunning={isRunning}
+              isRunning={isRunning || interactiveSessionActive}
+              errorLineNumbers={errorLineNumbers}
             />
           </div>
         </div>
@@ -659,7 +994,15 @@ export default function Classroom() {
               <AIAssistant code={code} language={language} />
             </TabsContent>
             <TabsContent value="output" className="flex-1 mt-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-col">
-              <OutputPanel output={output} error={error} isRunning={isRunning} />
+              <OutputPanel
+                output={output}
+                error={error}
+                isRunning={isRunning}
+                inputValue={executionInput}
+                onInputChange={setExecutionInput}
+                onRun={handleRun}
+                language={language}
+              />
             </TabsContent>
             <TabsContent value="versions" className="flex-1 mt-0 overflow-hidden data-[state=active]:flex data-[state=active]:flex-col">
               <VersionHistoryPanel 

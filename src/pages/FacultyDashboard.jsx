@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { Plus, BookOpen, Users, BarChart3, AlertTriangle, Copy, Check, Hash, TrendingUp, LogOut } from 'lucide-react';
+import { Plus, BookOpen, Users, BarChart3, AlertTriangle, Copy, Check, Hash, TrendingUp, LogOut, Activity, Eye, Code2, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
 import { motion } from 'framer-motion';
+import { io } from 'socket.io-client';
 import StatCard from '@/components/ui-custom/StatCard';
 import ClassroomCard from '@/components/ui-custom/ClassroomCard';
 import TopBar from '@/components/ui-custom/TopBar';
@@ -13,15 +14,29 @@ import { useAuth } from '@/lib/AuthContext';
 import moment from 'moment';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const SOCKET_IO_PATH = import.meta.env.VITE_SOCKET_IO_PATH || '/socket.io';
 
 const normalizeClassroom = (classroom) => ({
   ...classroom,
   id: classroom.id || classroom._id,
   student_emails: classroom.student_emails || [],
+  student_details: classroom.student_details || [],
   created_date: classroom.created_date || classroom.createdAt || classroom.created_at,
   updated_date: classroom.updated_date || classroom.updatedAt || classroom.updated_at,
   max_students: classroom.max_students ?? classroom.maxStudents ?? 30,
 });
+
+const getStudentName = (student) => {
+  if (student?.full_name) {
+    return student.full_name;
+  }
+
+  if (student?.email) {
+    return student.email.split('@')[0];
+  }
+
+  return 'Student';
+};
 
 const parseApiResponse = async (response) => {
   const data = await response.json().catch(() => ({}));
@@ -33,9 +48,36 @@ const parseApiResponse = async (response) => {
   return data;
 };
 
+const formatActivityType = (type) => {
+  const labels = {
+    code_change: 'Code edit',
+    execution_start: 'Run started',
+    execution_result: 'Run finished',
+    chat_message: 'Chat',
+    user_typing: 'Typing',
+    user_join: 'Joined',
+    user_leave: 'Left',
+    idle: 'No activity'
+  };
+
+  return labels[type] || type;
+};
+
+// eslint-disable-next-line sonarjs/cognitive-complexity
 export default function FacultyDashboard() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [copiedCode, setCopiedCode] = useState(null);
+  const [selectedClassroomId, setSelectedClassroomId] = useState('');
+  const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
+  const [liveFeed, setLiveFeed] = useState([]);
+  const [studentActivity, setStudentActivity] = useState({});
+  const [presenceMap, setPresenceMap] = useState({});
+  const [inspectedStudentEmail, setInspectedStudentEmail] = useState('');
+  const [activityFilters, setActivityFilters] = useState({
+    onlyErrors: false,
+    onlyActive: false,
+    topStruggling: false
+  });
   const [form, setForm] = useState({ name: '', description: '', language: 'javascript', max_students: 30 });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -71,9 +113,390 @@ export default function FacultyDashboard() {
   });
 
   const { data: allSubmissions = [] } = useQuery({
-    queryKey: ['facultySubmissions'],
-    queryFn: () => Promise.resolve([]),
+    queryKey: ['facultySubmissions', classrooms.map((c) => c.id).join(',')],
+    queryFn: async () => {
+      if (!classrooms.length) {
+        return [];
+      }
+
+      const responses = await Promise.all(
+        classrooms.map(async (classroom) => {
+          const response = await fetch(
+            `${API_BASE_URL}/api/submissions?classroom_id=${encodeURIComponent(classroom.id)}&limit=200`,
+            { headers: getAuthHeaders() }
+          );
+
+          if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+            throw new Error('Your session is invalid. Please sign in again.');
+          }
+
+          if (!response.ok) {
+            return [];
+          }
+
+          const payload = await response.json().catch(() => ({}));
+          return payload.submissions || [];
+        })
+      );
+
+      return responses.flat();
+    },
+    enabled: !!user && classrooms.length > 0,
+    retry: false,
+    refetchInterval: 15000,
   });
+
+  useEffect(() => {
+    if (!classrooms.length) {
+      setSelectedClassroomId('');
+      return;
+    }
+
+    const selectedExists = classrooms.some((classroom) => classroom.id === selectedClassroomId);
+    if (!selectedClassroomId || !selectedExists) {
+      setSelectedClassroomId(classrooms[0].id);
+    }
+  }, [classrooms, selectedClassroomId]);
+
+  const selectedClassroom = useMemo(
+    () => classrooms.find((classroom) => classroom.id === selectedClassroomId) || null,
+    [classrooms, selectedClassroomId]
+  );
+
+  const { data: persistedActivity } = useQuery({
+    queryKey: [
+      'facultyActivityHistory',
+      selectedClassroomId,
+      activityFilters.onlyErrors,
+      activityFilters.onlyActive,
+      activityFilters.topStruggling
+    ],
+    queryFn: async () => {
+      if (!selectedClassroomId) {
+        return { students: [], events: [] };
+      }
+
+      const query = new URLSearchParams({
+        limit: '250',
+        only_errors: String(activityFilters.onlyErrors),
+        only_active: String(activityFilters.onlyActive),
+        top_struggling: String(activityFilters.topStruggling)
+      });
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/classrooms/${selectedClassroomId}/activity-history?${query.toString()}`,
+        { headers: getAuthHeaders() }
+      );
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      if (!response.ok) {
+        return { students: [], events: [] };
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      return {
+        students: payload.students || [],
+        events: payload.events || []
+      };
+    },
+    enabled: !!user && !!selectedClassroomId,
+    retry: false,
+    refetchInterval: 20000
+  });
+
+  const { data: activeInterventionRoom = null, refetch: refetchActiveInterventionRoom } = useQuery({
+    queryKey: ['activeInterventionRoom', selectedClassroomId, inspectedStudentEmail],
+    queryFn: async () => {
+      if (!selectedClassroomId || !inspectedStudentEmail) {
+        return null;
+      }
+
+      const query = new URLSearchParams({
+        student_email: inspectedStudentEmail
+      });
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/classrooms/${selectedClassroomId}/interventions/active?${query.toString()}`,
+        { headers: getAuthHeaders() }
+      );
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      return payload.room || null;
+    },
+    enabled: !!user && !!selectedClassroomId && !!inspectedStudentEmail,
+    retry: false,
+    refetchInterval: 15000
+  });
+
+  useEffect(() => {
+    if (!persistedActivity) {
+      return;
+    }
+
+    const historyStudentMap = {};
+    (persistedActivity.students || []).forEach((student) => {
+      if (!student?.email) {
+        return;
+      }
+
+      historyStudentMap[student.email] = {
+        totalEvents: student.total_events || 0,
+        problemsCount: student.issues || 0,
+        lastCode: student.last_code || '',
+        lastLanguage: student.last_language || selectedClassroom?.language || 'javascript',
+        lastError: student.last_error || '',
+        lastOutput: '',
+        lastEventType: student.last_event_type || 'idle',
+        lastSeen: student.last_seen || null
+      };
+    });
+
+    setStudentActivity((previous) => ({
+      ...historyStudentMap,
+      ...previous
+    }));
+
+    setLiveFeed((previous) => {
+      const fromDb = (persistedActivity.events || []).map((event) => ({
+        id: event.id || `db_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        sender_email: event.sender_email,
+        sender_name: event.sender_name || event.sender_email?.split('@')[0] || 'Student',
+        type: event.type || 'activity',
+        metadata: event.metadata || {},
+        created_date: event.created_date || new Date().toISOString()
+      }));
+
+      const merged = [...previous, ...fromDb];
+      const unique = new Map();
+      merged.forEach((item) => {
+        if (!unique.has(item.id)) {
+          unique.set(item.id, item);
+        }
+      });
+
+      return Array.from(unique.values())
+        .sort((a, b) => new Date(b.created_date).getTime() - new Date(a.created_date).getTime())
+        .slice(0, 80);
+    });
+  }, [persistedActivity, selectedClassroom?.language]);
+
+  useEffect(() => {
+    setLiveFeed([]);
+    setStudentActivity({});
+    setPresenceMap({});
+    setInspectedStudentEmail('');
+  }, [selectedClassroomId]);
+
+  const parseMetadata = (metadata) => {
+    if (!metadata) {
+      return {};
+    }
+
+    if (typeof metadata === 'object') {
+      return metadata;
+    }
+
+    try {
+      return JSON.parse(metadata);
+    } catch {
+      return {};
+    }
+  };
+
+  const toggleFilter = (filterName) => {
+    setActivityFilters((previous) => ({
+      ...previous,
+      [filterName]: !previous[filterName]
+    }));
+  };
+
+  const handleSubmissionSocketEvent = (event) => {
+    if (event?.classroomId && String(event.classroomId) === String(selectedClassroomId)) {
+      queryClient.invalidateQueries({ queryKey: ['facultySubmissions'] });
+    }
+  };
+
+  const handleIntervene = async (studentEmail) => {
+    if (!selectedClassroomId || !studentEmail) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/classrooms/${selectedClassroomId}/interventions`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ student_email: studentEmail })
+      });
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload?.room?.room_id) {
+        throw new Error(payload.message || payload.error || 'Failed to create intervention room');
+      }
+
+      navigate(`/classroom?id=${selectedClassroomId}&room=${encodeURIComponent(payload.room.room_id)}&focusStudent=${encodeURIComponent(studentEmail)}`);
+    } catch (error) {
+      console.error('Intervention room creation failed:', error);
+    }
+  };
+
+  const handleCloseIntervention = async () => {
+    if (!selectedClassroomId || !activeInterventionRoom?.room_id) {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/classrooms/${selectedClassroomId}/interventions/${encodeURIComponent(activeInterventionRoom.room_id)}/close`,
+        {
+          method: 'POST',
+          headers: getAuthHeaders()
+        }
+      );
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to close intervention room');
+      }
+
+      await refetchActiveInterventionRoom();
+      queryClient.invalidateQueries({ queryKey: ['facultyActivityHistory', selectedClassroomId] });
+    } catch (error) {
+      console.error('Close intervention failed:', error);
+    }
+  };
+
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+
+    if (!token || !user?.email || !selectedClassroomId) {
+      setIsRealtimeConnected(false);
+      return undefined;
+    }
+
+    const socket = io(API_BASE_URL, {
+      path: SOCKET_IO_PATH,
+      auth: { token },
+      transports: ['websocket', 'polling']
+    });
+
+    socket.on('connect', () => {
+      setIsRealtimeConnected(true);
+      socket.emit('collaboration:join', { classroomId: selectedClassroomId });
+    });
+
+    socket.on('disconnect', () => {
+      setIsRealtimeConnected(false);
+    });
+
+    socket.on('connect_error', () => {
+      setIsRealtimeConnected(false);
+    });
+
+    socket.on('collaboration:presence', (payload) => {
+      const nextPresence = {};
+
+      (payload?.participants || []).forEach((participant) => {
+        if (participant?.email) {
+          nextPresence[participant.email] = participant;
+        }
+      });
+
+      setPresenceMap(nextPresence);
+    });
+
+    socket.on('collaboration:event', (event) => {
+      if (!event?.sender_email) {
+        return;
+      }
+
+      const metadata = parseMetadata(event.metadata);
+      const senderEmail = event.sender_email;
+
+      setLiveFeed((previous) => {
+        const next = [
+          {
+            id: event.id || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            sender_email: senderEmail,
+            sender_name: event.sender_name || senderEmail.split('@')[0],
+            type: event.type || 'activity',
+            metadata,
+            created_date: event.created_date || new Date().toISOString()
+          },
+          ...previous
+        ];
+
+        return next.slice(0, 60);
+      });
+
+      setStudentActivity((previous) => {
+        const current = previous[senderEmail] || {
+          totalEvents: 0,
+          problemsCount: 0,
+          lastCode: '',
+          lastLanguage: selectedClassroom?.language || 'javascript',
+          lastError: '',
+          lastOutput: '',
+          lastEventType: 'activity',
+          lastSeen: null
+        };
+
+        const nextState = {
+          ...current,
+          totalEvents: current.totalEvents + 1,
+          lastEventType: event.type || 'activity',
+          lastSeen: event.created_date || new Date().toISOString()
+        };
+
+        if (event.type === 'code_change') {
+          nextState.lastCode = typeof metadata.code === 'string' ? metadata.code : current.lastCode;
+          nextState.lastLanguage = metadata.language || current.lastLanguage;
+        }
+
+        if (event.type === 'execution_result') {
+          const failed = metadata.success === false;
+          if (failed) {
+            nextState.lastError = typeof metadata.error === 'string' ? metadata.error : current.lastError;
+            nextState.problemsCount = current.problemsCount + 1;
+          } else {
+            nextState.lastOutput = typeof metadata.output === 'string' ? metadata.output : current.lastOutput;
+            nextState.lastError = '';
+          }
+        }
+
+        return {
+          ...previous,
+          [senderEmail]: nextState
+        };
+      });
+    });
+
+    socket.on('submission:updated', handleSubmissionSocketEvent);
+    socket.on('submission:created', handleSubmissionSocketEvent);
+
+    return () => {
+      socket.removeAllListeners();
+      socket.disconnect();
+      setIsRealtimeConnected(false);
+    };
+  }, [selectedClassroomId, user?.email, selectedClassroom?.language]);
 
   const totalStudents = classrooms.reduce((sum, c) => sum + (c.student_emails?.length || 0), 0);
   const errorSubmissions = allSubmissions.filter(s => s.error_count > 0);
@@ -82,6 +505,98 @@ export default function FacultyDashboard() {
     : 0;
   const hasClassrooms = classrooms.length > 0;
   const classroomLabel = classrooms.length === 1 ? 'classroom' : 'classrooms';
+  const selectedClassroomStudents = selectedClassroom?.student_details || [];
+
+  const monitoredStudents = useMemo(() => {
+    let students = selectedClassroomStudents.map((student) => {
+      const email = student.email;
+      const activity = studentActivity[email] || null;
+      const presence = presenceMap[email] || null;
+
+      return {
+        email,
+        name: getStudentName(student),
+        role: student.role || 'student',
+        isOnline: Boolean(presence),
+        lastSeen: activity?.lastSeen || null,
+        totalEvents: activity?.totalEvents || 0,
+        problemsCount: activity?.problemsCount || 0,
+        lastEventType: activity?.lastEventType || 'idle',
+        lastLanguage: activity?.lastLanguage || selectedClassroom?.language || 'javascript',
+        lastCode: activity?.lastCode || '',
+        lastError: activity?.lastError || '',
+        lastOutput: activity?.lastOutput || ''
+      };
+    });
+
+    if (activityFilters.onlyErrors) {
+      students = students.filter((student) => student.problemsCount > 0 || Boolean(student.lastError));
+    }
+
+    if (activityFilters.onlyActive) {
+      students = students.filter((student) => student.isOnline);
+    }
+
+    students = students.sort((a, b) => {
+      if (activityFilters.topStruggling) {
+        if (a.problemsCount !== b.problemsCount) {
+          return b.problemsCount - a.problemsCount;
+        }
+      }
+
+      if (a.isOnline !== b.isOnline) {
+        return a.isOnline ? -1 : 1;
+      }
+
+      return (b.totalEvents || 0) - (a.totalEvents || 0);
+    });
+
+    if (activityFilters.topStruggling) {
+      students = students.slice(0, 10);
+    }
+
+    return students;
+  }, [selectedClassroomStudents, studentActivity, presenceMap, selectedClassroom?.language, activityFilters]);
+
+  const inspectedStudent = monitoredStudents.find((student) => student.email === inspectedStudentEmail) || monitoredStudents[0] || null;
+  const liveStudentsList = (() => {
+    if (!selectedClassroom) {
+      return null;
+    }
+
+    if (monitoredStudents.length === 0) {
+      return <p className="text-[11px] text-slate-600">No students joined this classroom yet.</p>;
+    }
+
+    return (
+      <div className="space-y-2 max-h-56 overflow-auto pr-1">
+        {monitoredStudents.map((student) => (
+          <button
+            key={student.email}
+            onClick={() => setInspectedStudentEmail(student.email)}
+            className={`w-full text-left rounded-lg border px-2.5 py-2 transition-colors ${inspectedStudent?.email === student.email ? 'border-indigo-500/35 bg-indigo-500/10' : 'border-slate-800/60 bg-slate-900/35 hover:bg-slate-800/25'}`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold text-slate-200 truncate">{student.name}</p>
+                <p className="text-[10px] text-slate-500 truncate">{student.email}</p>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <span className={`w-2 h-2 rounded-full ${student.isOnline ? 'bg-emerald-400' : 'bg-slate-600'}`} />
+                <span className="text-[10px] text-slate-500">{student.totalEvents}</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-between mt-1.5">
+              <span className="text-[10px] text-slate-400">{formatActivityType(student.lastEventType)}</span>
+              <span className={`text-[10px] ${student.problemsCount > 0 ? 'text-rose-300' : 'text-slate-500'}`}>
+                {student.problemsCount > 0 ? `${student.problemsCount} issues` : 'No issues'}
+              </span>
+            </div>
+          </button>
+        ))}
+      </div>
+    );
+  })();
 
   let classroomsContent;
 
@@ -292,6 +807,48 @@ export default function FacultyDashboard() {
                 </div>
               </div>
             )}
+
+            {/* Joined students */}
+            {hasClassrooms && (
+              <div className="rounded-xl border border-slate-800/60 bg-slate-900/20 overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-800/50">
+                  <Users style={{ width: 13, height: 13 }} className="text-slate-500" />
+                  <h3 className="text-[12px] font-semibold text-slate-400 uppercase tracking-wider">Joined Students</h3>
+                </div>
+                <div className="divide-y divide-slate-800/40">
+                  {classrooms.map((classroom) => (
+                    <div key={`${classroom.id}-students`} className="px-4 py-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-[12px] font-medium text-slate-300">{classroom.name}</p>
+                        <span className="text-[10px] text-slate-500">{classroom.student_details.length} joined</span>
+                      </div>
+
+                      {classroom.student_details.length > 0 ? (
+                        <div className="space-y-2">
+                          {classroom.student_details.map((student) => (
+                            <div key={`${classroom.id}-${student.email}`} className="rounded-lg border border-slate-800/60 bg-slate-900/35 px-3 py-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[11px] font-semibold text-slate-200 truncate">{getStudentName(student)}</p>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${student.is_active ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20' : 'text-slate-400 bg-slate-500/10 border border-slate-500/20'}`}>
+                                  {student.is_active ? 'active' : 'inactive'}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-slate-500 truncate mt-1">{student.email}</p>
+                              <div className="flex items-center gap-3 mt-1.5">
+                                <p className="text-[10px] text-slate-600">Roll: {student.roll_number || 'N/A'}</p>
+                                <p className="text-[10px] text-slate-600">Role: {student.role || 'student'}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-slate-600">No students joined this classroom yet.</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Right sidebar */}
@@ -366,6 +923,138 @@ export default function FacultyDashboard() {
                     </div>
                     <p className="text-[11px] text-slate-500">All clear! No errors found</p>
                   </div>
+                )}
+              </div>
+            </div>
+
+            {/* Live Activity Monitor */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-[14px] font-semibold text-white">Live Activity</h2>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${isRealtimeConnected ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20' : 'text-amber-300 bg-amber-500/10 border-amber-500/20'}`}>
+                  {isRealtimeConnected ? 'connected' : 'offline'}
+                </span>
+              </div>
+
+              <div className="rounded-xl border border-slate-800/60 bg-slate-900/20 p-3 space-y-3">
+                {hasClassrooms ? (
+                  <Select value={selectedClassroomId || undefined} onValueChange={setSelectedClassroomId}>
+                    <SelectTrigger className="bg-slate-900 border-slate-800 text-white h-9 text-[12px]">
+                      <SelectValue placeholder="Select classroom" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-900 border-slate-700">
+                      {classrooms.map((classroom) => (
+                        <SelectItem key={classroom.id} value={classroom.id} className="text-slate-200 focus:bg-slate-800 focus:text-white text-[12px]">
+                          {classroom.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="text-[11px] text-slate-600">Create a classroom to enable live monitoring.</p>
+                )}
+
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => toggleFilter('onlyErrors')}
+                    className={`text-[10px] px-2 py-1 rounded border transition-colors ${activityFilters.onlyErrors ? 'text-rose-200 bg-rose-500/15 border-rose-500/30' : 'text-slate-500 bg-slate-900 border-slate-800 hover:bg-slate-800/40'}`}
+                  >
+                    Only errors
+                  </button>
+                  <button
+                    onClick={() => toggleFilter('onlyActive')}
+                    className={`text-[10px] px-2 py-1 rounded border transition-colors ${activityFilters.onlyActive ? 'text-emerald-200 bg-emerald-500/15 border-emerald-500/30' : 'text-slate-500 bg-slate-900 border-slate-800 hover:bg-slate-800/40'}`}
+                  >
+                    Only active
+                  </button>
+                  <button
+                    onClick={() => toggleFilter('topStruggling')}
+                    className={`text-[10px] px-2 py-1 rounded border transition-colors ${activityFilters.topStruggling ? 'text-amber-200 bg-amber-500/15 border-amber-500/30' : 'text-slate-500 bg-slate-900 border-slate-800 hover:bg-slate-800/40'}`}
+                  >
+                    Top struggling
+                  </button>
+                </div>
+
+                {liveStudentsList}
+              </div>
+            </div>
+
+            {/* Student Code Inspector */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-[14px] font-semibold text-white">Code Inspector</h2>
+                <Eye style={{ width: 13, height: 13 }} className="text-slate-500" />
+              </div>
+
+              <div className="rounded-xl border border-slate-800/60 bg-slate-900/20 p-3 space-y-3">
+                {inspectedStudent ? (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-[12px] font-semibold text-slate-200 truncate">{inspectedStudent.name}</p>
+                        <p className="text-[10px] text-slate-500 truncate">{inspectedStudent.email}</p>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          onClick={() => handleIntervene(inspectedStudent.email)}
+                          className="h-7 text-[11px] px-2 bg-indigo-600 hover:bg-indigo-500"
+                        >
+                          <Activity style={{ width: 11, height: 11 }} /> Intervene
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleCloseIntervention}
+                          disabled={!activeInterventionRoom?.room_id}
+                          className="h-7 text-[11px] px-2 border-rose-500/25 bg-rose-500/8 text-rose-200 hover:bg-rose-500/15 hover:text-white"
+                        >
+                          <XCircle style={{ width: 11, height: 11 }} /> Close
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] text-slate-500">
+                      <span className="flex items-center gap-1">
+                        <Code2 style={{ width: 11, height: 11 }} /> {inspectedStudent.lastLanguage}
+                      </span>
+                      <span>{inspectedStudent.lastSeen ? moment(inspectedStudent.lastSeen).fromNow() : 'No events yet'}</span>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-800/70 bg-slate-950/60 p-2.5">
+                      {inspectedStudent.lastCode ? (
+                        <pre className="text-[10px] leading-4 text-slate-300 whitespace-pre-wrap max-h-40 overflow-auto">{inspectedStudent.lastCode.slice(0, 2400)}</pre>
+                      ) : (
+                        <p className="text-[10px] text-slate-600">No code snapshots yet. It will appear when the student starts typing.</p>
+                      )}
+                    </div>
+
+                    {inspectedStudent.lastError && (
+                      <div className="rounded-lg border border-rose-500/25 bg-rose-500/8 p-2.5">
+                        <p className="text-[10px] text-rose-200 whitespace-pre-wrap max-h-24 overflow-auto">{inspectedStudent.lastError}</p>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[11px] text-slate-600">Pick a classroom to inspect student code.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Recent Live Feed */}
+            <div>
+              <h2 className="text-[14px] font-semibold text-white mb-3">Recent Feed</h2>
+              <div className="rounded-xl border border-slate-800/60 bg-slate-900/20 p-3 space-y-2 max-h-56 overflow-auto">
+                {liveFeed.length > 0 ? liveFeed.slice(0, 20).map((item) => (
+                  <div key={item.id} className="rounded-lg border border-slate-800/50 bg-slate-900/40 px-2.5 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-medium text-slate-300 truncate">{item.sender_name}</p>
+                      <span className="text-[9px] text-slate-600">{moment(item.created_date).fromNow()}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-0.5">{formatActivityType(item.type)}</p>
+                  </div>
+                )) : (
+                  <p className="text-[11px] text-slate-600">No live activity yet.</p>
                 )}
               </div>
             </div>

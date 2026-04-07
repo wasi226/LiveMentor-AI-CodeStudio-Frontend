@@ -1,3 +1,5 @@
+// @ts-nocheck
+/* eslint-disable react/prop-types */
 /**
  * Enhanced Real-Time Collaboration Context
  * Provides Socket.IO-based collaboration functionality
@@ -22,7 +24,11 @@ export const COLLABORATION_EVENTS = {
   USER_LEAVE: 'user_leave',
   LANGUAGE_CHANGE: 'language_change',
   EXECUTION_START: 'execution_start',
-  EXECUTION_RESULT: 'execution_result'
+  EXECUTION_RESULT: 'execution_result',
+  TERMINAL_STARTED: 'terminal:started',
+  TERMINAL_OUTPUT: 'terminal:output',
+  TERMINAL_ERROR: 'terminal:error',
+  TERMINAL_ENDED: 'terminal:ended'
 };
 
 export const CollaborationProvider = ({ children }) => {
@@ -36,6 +42,7 @@ export const CollaborationProvider = ({ children }) => {
   const typingTimeouts = useRef(new Map());
   const currentUser = useRef(null);
   const currentClassroom = useRef(null);
+  const currentRoom = useRef({ roomId: null, roomType: 'classroom' });
 
   const parseMetadata = useCallback((metadata) => {
     if (!metadata) return {};
@@ -130,7 +137,7 @@ export const CollaborationProvider = ({ children }) => {
   /**
    * Initialize collaboration session for a classroom
    */
-  const connect = useCallback(async (classroomId, user) => {
+  const connect = useCallback(async (classroomId, user, options = {}) => {
     if (!classroomId || !user) {
       return;
     }
@@ -163,6 +170,10 @@ export const CollaborationProvider = ({ children }) => {
 
     currentClassroom.current = classroomId;
     currentUser.current = normalizedUser;
+    currentRoom.current = {
+      roomId: options.roomId || null,
+      roomType: options.roomType || (options.roomId ? 'intervention' : 'classroom')
+    };
 
     const socket = io(API_BASE_URL, {
       path: SOCKET_IO_PATH,
@@ -174,7 +185,11 @@ export const CollaborationProvider = ({ children }) => {
 
     socket.on('connect', () => {
       setIsConnected(true);
-      socket.emit('collaboration:join', { classroomId });
+      socket.emit('collaboration:join', {
+        classroomId,
+        roomId: currentRoom.current.roomId,
+        roomType: currentRoom.current.roomType
+      });
     });
 
     socket.on('disconnect', () => {
@@ -192,6 +207,22 @@ export const CollaborationProvider = ({ children }) => {
 
     socket.on('collaboration:event', (event) => {
       processRealtimeEvent(event);
+    });
+
+    socket.on(COLLABORATION_EVENTS.TERMINAL_STARTED, (payload) => {
+      notifyListeners(COLLABORATION_EVENTS.TERMINAL_STARTED, payload || {});
+    });
+
+    socket.on(COLLABORATION_EVENTS.TERMINAL_OUTPUT, (payload) => {
+      notifyListeners(COLLABORATION_EVENTS.TERMINAL_OUTPUT, payload || {});
+    });
+
+    socket.on(COLLABORATION_EVENTS.TERMINAL_ERROR, (payload) => {
+      notifyListeners(COLLABORATION_EVENTS.TERMINAL_ERROR, payload || {});
+    });
+
+    socket.on(COLLABORATION_EVENTS.TERMINAL_ENDED, (payload) => {
+      notifyListeners(COLLABORATION_EVENTS.TERMINAL_ENDED, payload || {});
     });
 
     socket.on('collaboration:error', (payload) => {
@@ -235,6 +266,7 @@ export const CollaborationProvider = ({ children }) => {
     setTypingUsers(new Set());
 
     currentClassroom.current = null;
+    currentRoom.current = { roomId: null, roomType: 'classroom' };
     currentUser.current = null;
   }, []);
 
@@ -325,6 +357,36 @@ export const CollaborationProvider = ({ children }) => {
     });
   }, [emit]);
 
+  const startTerminalExecution = useCallback((payload = {}) => {
+    const socket = socketRef.current;
+    if (!socket?.connected) {
+      return false;
+    }
+
+    socket.emit('terminal:start', payload);
+    return true;
+  }, []);
+
+  const sendTerminalInput = useCallback((payload = {}) => {
+    const socket = socketRef.current;
+    if (!socket?.connected) {
+      return false;
+    }
+
+    socket.emit('terminal:input', payload);
+    return true;
+  }, []);
+
+  const stopTerminalExecution = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket?.connected) {
+      return false;
+    }
+
+    socket.emit('terminal:stop');
+    return true;
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -350,6 +412,9 @@ export const CollaborationProvider = ({ children }) => {
     syncCode,
     syncCursor,
     sendTyping,
+    startTerminalExecution,
+    sendTerminalInput,
+    stopTerminalExecution,
 
     // Constants
     COLLABORATION_EVENTS
@@ -361,8 +426,11 @@ export const CollaborationProvider = ({ children }) => {
     isConnected,
     on,
     sendTyping,
+    sendTerminalInput,
     syncCode,
     syncCursor,
+    startTerminalExecution,
+    stopTerminalExecution,
     typingUsers
   ]);
 

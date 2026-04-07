@@ -68,8 +68,9 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password, role = null) => {
     try {
       setAuthError(null);
+      const normalizedEmail = String(email || '').trim().toLowerCase();
       
-      const requestBody = { email, password };
+      const requestBody = { email: normalizedEmail, password };
       if (role) {
         requestBody.role = role;
       }
@@ -82,7 +83,7 @@ export const AuthProvider = ({ children }) => {
         body: JSON.stringify(requestBody)
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (response.ok && data.success) {
         localStorage.setItem('auth_token', data.token);
@@ -96,17 +97,23 @@ export const AuthProvider = ({ children }) => {
       }
     } catch (error) {
       console.error('Login error:', error);
-      setAuthError(error.message);
-      throw error;
+      const isNetworkError = error instanceof TypeError && /fetch/i.test(error.message);
+      const message = isNetworkError
+        ? `Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend is running and CORS is configured for this frontend origin.`
+        : (error.message || 'Login failed');
+
+      setAuthError(message);
+      throw new Error(message);
     }
   };
 
   const register = async (email, password, fullName, role = 'student', rollNumber = '') => {
     try {
       setAuthError(null);
+      const normalizedEmail = String(email || '').trim().toLowerCase();
       
       const requestBody = { 
-        email, 
+        email: normalizedEmail, 
         password, 
         fullName, 
         role 
@@ -125,7 +132,7 @@ export const AuthProvider = ({ children }) => {
         body: JSON.stringify(requestBody)
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (response.ok && data.success) {
         return { success: true, user: data.user };
@@ -136,8 +143,13 @@ export const AuthProvider = ({ children }) => {
       }
     } catch (error) {
       console.error('Registration error:', error);
-      setAuthError(error.message);
-      throw error;
+      const isNetworkError = error instanceof TypeError && /fetch/i.test(error.message);
+      const message = isNetworkError
+        ? `Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend is running and CORS is configured for this frontend origin.`
+        : (error.message || 'Registration failed');
+
+      setAuthError(message);
+      throw new Error(message);
     }
   };
 
