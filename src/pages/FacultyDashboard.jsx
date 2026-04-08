@@ -910,11 +910,6 @@ export default function FacultyDashboard() {
     cpp: 'text-cyan-400', typescript: 'text-sky-400', go: 'text-teal-400', rust: 'text-rose-400',
   };
 
-  const langColors = {
-    javascript: 'text-yellow-400', python: 'text-blue-400', java: 'text-orange-400',
-    cpp: 'text-cyan-400', typescript: 'text-sky-400', go: 'text-teal-400', rust: 'text-rose-400',
-  };
-
   return (
     <div className="min-h-screen bg-slate-950">
       <TopBar
