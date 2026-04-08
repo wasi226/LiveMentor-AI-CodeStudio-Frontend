@@ -1,5 +1,7 @@
+/* eslint-disable react/prop-types */
+/* eslint-disable sonarjs/no-nested-functions */
 import React from 'react';
-import { Users, Crown, Wifi, WifiOff, Edit3, Zap } from 'lucide-react';
+import { Users, Crown, WifiOff, Edit3, Zap, UserX } from 'lucide-react';
 import { useCollaboration } from '@/contexts/CollaborationContext';
 
 const gradients = [
@@ -12,8 +14,9 @@ const gradients = [
   'from-lime-500 to-green-600',
 ];
 
-export default function ParticipantsPanel({ participants, facultyEmail }) {
+export default function ParticipantsPanel({ participants, facultyEmail, currentUserEmail, currentUserRole, onRemoveStudent, removingStudentEmail }) {
   const { isConnected, activeUsers, typingUsers } = useCollaboration();
+  const canRemoveStudents = currentUserRole === 'admin' || currentUserEmail === facultyEmail;
   
   const faculty = participants.filter(p => p.email === facultyEmail);
   const students = participants.filter(p => p.email !== facultyEmail);
@@ -34,6 +37,19 @@ export default function ParticipantsPanel({ participants, facultyEmail }) {
     const isActive = isUserActive(person.email);
     const isTyping = isUserTyping(person.email);
     const lastSeen = getUserLastSeen(person.email);
+    const canRemoveThisStudent =
+      !isFaculty &&
+      canRemoveStudents &&
+      typeof onRemoveStudent === 'function' &&
+      person.email !== currentUserEmail;
+    const isRemoving = removingStudentEmail === person.email;
+    let presenceLabel = <span className="text-[9px] text-slate-600">Offline</span>;
+
+    if (isActive) {
+      presenceLabel = <span className="text-[9px] text-emerald-400 font-medium">• Online</span>;
+    } else if (lastSeen) {
+      presenceLabel = <span className="text-[9px] text-slate-500">{getTimeAgo(lastSeen)}</span>;
+    }
     
     return (
       <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-slate-800/30 transition-colors group">
@@ -70,16 +86,22 @@ export default function ParticipantsPanel({ participants, facultyEmail }) {
           ) : (
             <div className="flex items-center justify-between mt-0.5">
               <p className="text-[10px] text-slate-600 truncate">{person.email}</p>
-              {isActive ? (
-                <span className="text-[9px] text-emerald-400 font-medium">• Online</span>
-              ) : lastSeen ? (
-                <span className="text-[9px] text-slate-500">{getTimeAgo(lastSeen)}</span>
-              ) : (
-                <span className="text-[9px] text-slate-600">Offline</span>
-              )}
+              {presenceLabel}
             </div>
           )}
         </div>
+        {canRemoveThisStudent && (
+          <button
+            type="button"
+            onClick={() => onRemoveStudent(person)}
+            disabled={isRemoving}
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-rose-400 hover:text-rose-300 disabled:opacity-50 p-1 rounded hover:bg-rose-500/10"
+            title={isRemoving ? 'Removing student...' : 'Remove student from class'}
+            aria-label={`Remove ${person.email} from class`}
+          >
+            <UserX style={{ width: 13, height: 13 }} />
+          </button>
+        )}
       </div>
     );
   };

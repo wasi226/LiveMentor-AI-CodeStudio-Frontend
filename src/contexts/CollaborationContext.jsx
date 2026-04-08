@@ -210,6 +210,10 @@ export const CollaborationProvider = ({ children }) => {
       processRealtimeEvent(event);
     });
 
+    socket.on('collaboration:removed', (payload) => {
+      notifyListeners('collaboration:removed', payload || {});
+    });
+
     socket.on(COLLABORATION_EVENTS.TERMINAL_STARTED, (payload) => {
       notifyListeners(COLLABORATION_EVENTS.TERMINAL_STARTED, payload || {});
     });

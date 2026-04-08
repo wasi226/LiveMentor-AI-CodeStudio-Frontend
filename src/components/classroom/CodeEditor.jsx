@@ -1,3 +1,4 @@
+/* eslint-disable react/prop-types */
 import React, { useState, useRef, useMemo } from 'react';
 import { Play, Send, Copy, RotateCcw, ChevronDown, Check, Loader2, Bug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -29,7 +30,7 @@ export const DEFAULT_CODE_SNIPPETS = {
   rust:       `// Welcome to CodeClass.ai\nfn main() {\n    // Write your solution here\n    println!("Hello, world!");\n}`,
 };
 
-export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning, errorLineNumbers = [] }) {
+export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning, readOnly = false, errorLineNumbers = [] }) {
   const [copied, setCopied] = useState(false);
   const [showVisualizer, setShowVisualizer] = useState(false);
   const textareaRef = useRef(null);
@@ -57,6 +58,10 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
   };
 
   const handleReset = () => {
+    if (readOnly) {
+      return;
+    }
+
     onCodeChange(DEFAULT_CODE_SNIPPETS[language] || DEFAULT_CODE_SNIPPETS.javascript);
   };
 
@@ -73,6 +78,10 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
 
   // Handle tab key in textarea
   const handleKeyDown = (e) => {
+    if (readOnly) {
+      return;
+    }
+
     if (e.key === 'Tab') {
       e.preventDefault();
       const start = e.target.selectionStart;
@@ -106,7 +115,12 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
         <div className="flex items-center gap-1">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="h-7 text-[11px] text-slate-400 hover:text-white hover:bg-slate-800 gap-1.5 font-mono px-2 sm:px-2.5">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-[11px] text-slate-400 hover:text-white hover:bg-slate-800 gap-1.5 font-mono px-2 sm:px-2.5"
+                disabled={readOnly}
+              >
                 <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: currentLang.color }} />
                 <span className="hidden sm:inline">{currentLang.label}</span>
                 <span className="sm:hidden">{currentLang.ext.toUpperCase()}</span>
@@ -118,6 +132,10 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
                 <DropdownMenuItem
                   key={lang.value}
                   onClick={() => {
+                    if (readOnly) {
+                      return;
+                    }
+
                     onLanguageChange(lang.value);
                     onCodeChange(DEFAULT_CODE_SNIPPETS[lang.value]);
                   }}
@@ -147,6 +165,7 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
             variant="ghost" size="sm"
             className="h-7 w-7 p-0 text-slate-500 hover:text-white hover:bg-slate-800"
             onClick={handleReset}
+            disabled={readOnly}
             title="Reset code"
           >
             <RotateCcw style={{ width: 13, height: 13 }} />
@@ -176,16 +195,22 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
         <textarea
           ref={textareaRef}
           value={displayCode}
-          onChange={(e) => onCodeChange(e.target.value)}
+          onChange={(e) => {
+            if (!readOnly) {
+              onCodeChange(e.target.value);
+            }
+          }}
           onKeyDown={handleKeyDown}
           onSelect={(e) => emitCursorChange(e.target)}
           onClick={(e) => emitCursorChange(e.target)}
           onKeyUp={(e) => emitCursorChange(e.target)}
-          className="flex-1 bg-transparent text-slate-200 p-4 resize-none outline-none font-mono text-[13px] leading-6 overflow-auto"
+          className={`flex-1 bg-transparent text-slate-200 p-4 resize-none outline-none font-mono text-[13px] leading-6 overflow-auto ${readOnly ? 'cursor-not-allowed opacity-85' : ''}`}
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
           autoComplete="off"
+          readOnly={readOnly}
+          aria-readonly={readOnly}
         />
       </div>
 

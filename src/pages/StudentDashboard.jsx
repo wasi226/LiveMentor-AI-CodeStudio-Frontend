@@ -7,7 +7,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { motion } from 'framer-motion';
 import StatCard from '@/components/ui-custom/StatCard';
 import ClassroomCard from '@/components/ui-custom/ClassroomCard';
-import AssignmentCard from '@/components/ui-custom/AssignmentCard';
 import TopBar from '@/components/ui-custom/TopBar';
 import { useAuth } from '@/lib/AuthContext';
 import moment from 'moment';
@@ -95,8 +94,9 @@ export default function StudentDashboard() {
 
       const assignmentResponses = await Promise.all(
         classrooms.map(async (classroom) => {
+          // Fetch assigned assignments specifically
           const response = await fetch(
-            `${API_BASE_URL}/api/assignments?classroom_id=${encodeURIComponent(classroom.id)}&limit=100&sort=desc&sortBy=createdAt`,
+            `${API_BASE_URL}/api/assignments/classroom/${encodeURIComponent(classroom.id)}/assigned?limit=100`,
             { headers: getAuthHeaders() }
           );
 
@@ -339,17 +339,38 @@ export default function StudentDashboard() {
             {assignments.length > 0 && (
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-[14px] font-semibold text-white">Active Assignments</h2>
-                  <span className="text-[11px] text-slate-600">{assignments.length} open</span>
+                  <h2 className="text-[14px] font-semibold text-white">Assigned Assignments</h2>
+                  <span className="text-[11px] text-slate-600">{assignments.length} assigned to you</span>
                 </div>
                 <div className="grid sm:grid-cols-2 gap-2.5">
                   {assignments.slice(0, 4).map((a, i) => (
-                    <AssignmentCard
+                    <div
                       key={a.id}
-                      assignment={a}
-                      delay={i * 0.07}
-                      onClick={() => navigate(`/classroom?id=${encodeURIComponent(a.classroom_id)}`)}
-                    />
+                      className="group rounded-lg border border-slate-800/60 bg-slate-900/30 p-4 hover:border-slate-700/60 hover:bg-slate-900/60 transition-all duration-200 cursor-pointer"
+                      onClick={() => navigate(`/classroom?id=${encodeURIComponent(a.classroom_id)}&assignment=${encodeURIComponent(a.id)}`)}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="w-7 h-7 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <FileCode style={{ width: 13, height: 13 }} className="text-indigo-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-[13px] font-semibold text-slate-200 group-hover:text-white transition-colors line-clamp-1">{a.title}</h4>
+                          <p className="text-[11px] text-slate-600 mt-0.5 line-clamp-1">{a.description || 'No description'}</p>
+
+                          {a.due_date && (
+                            <div className={`flex items-center gap-1.5 mt-2 text-[11px] font-medium ${moment(a.due_date).isBefore(moment()) ? 'text-rose-400' : moment(a.due_date).diff(moment(), 'days') <= 2 ? 'text-amber-400' : 'text-slate-600'}`}>
+                              <Clock style={{ width: 11, height: 11 }} />
+                              {moment(a.due_date).isBefore(moment())
+                                ? `Overdue by ${Math.abs(moment(a.due_date).diff(moment(), 'days'))} day${Math.abs(moment(a.due_date).diff(moment(), 'days')) !== 1 ? 's' : ''}`
+                                : moment(a.due_date).diff(moment(), 'days') === 0 ? 'Due today'
+                                : moment(a.due_date).diff(moment(), 'days') === 1 ? 'Due tomorrow'
+                                : `Due ${moment(a.due_date).format('MMM D')}`
+                              }
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>

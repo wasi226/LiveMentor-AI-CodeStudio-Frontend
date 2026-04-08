@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { Plus, BookOpen, Users, BarChart3, AlertTriangle, Copy, Check, Hash, TrendingUp, LogOut, Activity, Eye, Code2, XCircle, LayoutGrid } from 'lucide-react';
+import { Plus, BookOpen, Users, BarChart3, AlertTriangle, Copy, Check, Hash, TrendingUp, LogOut, Activity, Eye, Code2, XCircle, LayoutGrid, FileCode } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
@@ -214,6 +214,7 @@ function CodePreview({ code, language, maxLines = 40, heightClass = 'max-h-40' }
 export default function FacultyDashboard() {
   const dashboardParams = new URLSearchParams(globalThis.location.search);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
   const [copiedCode, setCopiedCode] = useState(null);
   const [selectedClassroomId, setSelectedClassroomId] = useState(dashboardParams.get('classroomId') || '');
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(false);
@@ -229,6 +230,7 @@ export default function FacultyDashboard() {
   });
   const [selectedSubmission, setSelectedSubmission] = useState(null);
   const [form, setForm] = useState({ name: '', description: '', language: 'javascript', max_students: 30 });
+  const [assignmentForm, setAssignmentForm] = useState({ title: '', description: '', difficulty: 'medium', max_score: 100, due_date: '' });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { user, logout, getAuthHeaders, handleUnauthorizedResponse } = useAuth();
@@ -865,10 +867,47 @@ export default function FacultyDashboard() {
     },
   });
 
+  const createAssignmentMutation = useMutation({
+    mutationFn: async (data) => {
+      const response = await fetch(`${API_BASE_URL}/api/assignments`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          title: data.title.trim(),
+          description: data.description.trim(),
+          classroom_id: selectedClassroomId,
+          difficulty: data.difficulty,
+          max_score: data.max_score,
+          due_date: data.due_date || undefined,
+          test_cases: [],
+          starter_code: '',
+          solution_code: ''
+        }),
+      });
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      const payload = await parseApiResponse(response);
+      return payload.assignment;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
+      setAssignmentDialogOpen(false);
+      setAssignmentForm({ title: '', description: '', difficulty: 'medium', max_score: 100, due_date: '' });
+    },
+  });
+
   const copyCode = (code) => {
     navigator.clipboard.writeText(code);
     setCopiedCode(code);
     setTimeout(() => setCopiedCode(null), 2000);
+  };
+
+  const langColors = {
+    javascript: 'text-yellow-400', python: 'text-blue-400', java: 'text-orange-400',
+    cpp: 'text-cyan-400', typescript: 'text-sky-400', go: 'text-teal-400', rust: 'text-rose-400',
   };
 
   const langColors = {
@@ -1057,6 +1096,154 @@ export default function FacultyDashboard() {
                       )}
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Assignments Section */}
+            {hasClassrooms && (
+              <div className="rounded-xl border border-slate-800/60 bg-slate-900/20 overflow-hidden">
+                <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-slate-800/50">
+                  <div className="flex items-center gap-2">
+                    <FileCode style={{ width: 13, height: 13 }} className="text-slate-500" />
+                    <h3 className="text-[12px] font-semibold text-slate-400 uppercase tracking-wider">Assignments</h3>
+                  </div>
+                  <span className="text-[10px] text-slate-500">{allAssignments.length} total</span>
+                </div>
+                <div className="p-4 space-y-3">
+                  {selectedClassroom && (
+                    <Dialog open={assignmentDialogOpen} onOpenChange={(open) => {
+                      setAssignmentDialogOpen(open);
+                      if (!open) {
+                        createAssignmentMutation.reset();
+                      }
+                    }}>
+                      <DialogTrigger asChild>
+                        <Button className="w-full bg-indigo-600 hover:bg-indigo-500 h-8 text-[12px]">
+                          <Plus style={{ width: 12, height: 12 }} />
+                          Create Assignment
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="bg-[#0d1117] border-slate-800 text-white max-w-sm">
+                        <DialogHeader>
+                          <DialogTitle className="text-[15px]">Create Assignment</DialogTitle>
+                          <DialogDescription className="text-slate-500 text-[12px]">Create a new assignment for {selectedClassroom?.name}</DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-3 mt-2">
+                          <input
+                            placeholder="Assignment title *"
+                            value={assignmentForm.title}
+                            onChange={(e) => {
+                              createAssignmentMutation.reset();
+                              setAssignmentForm(p => ({ ...p, title: e.target.value }));
+                            }}
+                            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-[13px] placeholder:text-slate-600 outline-none focus:border-indigo-500/50 transition-colors"
+                          />
+                          <textarea
+                            placeholder="Description (optional)"
+                            value={assignmentForm.description}
+                            onChange={(e) => {
+                              createAssignmentMutation.reset();
+                              setAssignmentForm(p => ({ ...p, description: e.target.value }));
+                            }}
+                            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-[13px] placeholder:text-slate-600 outline-none focus:border-indigo-500/50 transition-colors resize-none h-20"
+                          />
+                          <Select value={assignmentForm.difficulty} onValueChange={(v) => {
+                            createAssignmentMutation.reset();
+                            setAssignmentForm(p => ({ ...p, difficulty: v }));
+                          }}>
+                            <SelectTrigger className="bg-slate-900 border-slate-800 text-white h-10 text-[13px]">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="bg-slate-900 border-slate-700">
+                              {['easy', 'medium', 'hard'].map(l => (
+                                <SelectItem key={l} value={l} className="text-slate-200 focus:bg-slate-800 focus:text-white text-[13px]">{l.charAt(0).toUpperCase() + l.slice(1)}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <input
+                            placeholder="Max score (optional)"
+                            type="number"
+                            value={assignmentForm.max_score}
+                            onChange={(e) => {
+                              createAssignmentMutation.reset();
+                              setAssignmentForm(p => ({ ...p, max_score: parseInt(e.target.value) || 100 }));
+                            }}
+                            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-[13px] placeholder:text-slate-600 outline-none focus:border-indigo-500/50 transition-colors"
+                          />
+                          <input
+                            placeholder="Due date (optional)"
+                            type="datetime-local"
+                            value={assignmentForm.due_date}
+                            onChange={(e) => {
+                              createAssignmentMutation.reset();
+                              setAssignmentForm(p => ({ ...p, due_date: e.target.value }));
+                            }}
+                            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-[13px] placeholder:text-slate-600 outline-none focus:border-indigo-500/50 transition-colors"
+                          />
+                          {createAssignmentMutation.isError && (
+                            <p className="text-rose-400 text-[11px]">{createAssignmentMutation.error.message}</p>
+                          )}
+                          <Button
+                            onClick={() => createAssignmentMutation.mutate(assignmentForm)}
+                            disabled={assignmentForm.title.trim().length < 3 || createAssignmentMutation.isPending}
+                            className="w-full bg-indigo-600 hover:bg-indigo-500 h-9 text-[13px]"
+                          >
+                            {createAssignmentMutation.isPending ? 'Creating...' : 'Create Assignment'}
+                          </Button>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                  )}
+
+                  {selectedClassroom && allAssignments.some(a => String(a.classroom_id) === String(selectedClassroom.id)) ? (
+                    <div className="space-y-2 max-h-64 overflow-auto">
+                      {allAssignments
+                        .filter(a => String(a.classroom_id) === String(selectedClassroom.id))
+                        .sort((a, b) => new Date(b.createdAt || b.created_date) - new Date(a.createdAt || a.created_date))
+                        .map((assignment) => (
+                          <div key={assignment.id || assignment._id} className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-[11px] font-semibold text-slate-200 truncate">{assignment.title}</p>
+                                <p className="text-[10px] text-slate-500 truncate mt-0.5">{assignment.description || 'No description'}</p>
+                                <div className="flex items-center gap-2 mt-1.5">
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded ${assignment.is_assigned ? 'text-emerald-300 bg-emerald-500/10' : 'text-amber-300 bg-amber-500/10'}`}>
+                                    {assignment.is_assigned ? '✓ Assigned' : 'Draft'}
+                                  </span>
+                                  {assignment.due_date && (
+                                    <span className="text-[9px] text-slate-600">Due: {moment(assignment.due_date).format('MM/DD')}</span>
+                                  )}
+                                </div>
+                              </div>
+                              {!assignment.is_assigned && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    const assignmentId = assignment.id || assignment._id;
+                                    fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/assign-to-class`, {
+                                      method: 'POST',
+                                      headers: getAuthHeaders(),
+                                      body: JSON.stringify({})
+                                    })
+                                      .then(r => r.json())
+                                      .then(() => {
+                                        queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
+                                      })
+                                      .catch(err => console.error('Assignment error:', err));
+                                  }}
+                                  className="h-6 text-[10px] px-2 bg-emerald-600 hover:bg-emerald-500 flex-shrink-0"
+                                >
+                                  Assign
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-600 text-center py-4">No assignments yet. Create one to get started!</p>
+                  )}
                 </div>
               </div>
             )}

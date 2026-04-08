@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MessageSquare, Sparkles, Terminal, ArrowLeft, PanelLeftClose, PanelLeftOpen, CheckCircle2, History } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useNavigate } from 'react-router-dom';
@@ -16,6 +16,8 @@ import { useCollaboration } from '@/contexts/CollaborationContext';
 import { useAuth } from '@/lib/AuthContext';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const CHAT_CACHE_KEY_PREFIX = 'lm_chat_cache_v1';
+const CHAT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const LANGUAGE_EXTENSIONS = {
   javascript: 'js',
   python: 'py',
@@ -55,6 +57,67 @@ const normalizeMessage = (message) => {
     created_date: message?.created_date || message?.created_at || new Date().toISOString(),
     metadata
   };
+};
+
+const getChatCacheKey = (classroomId, userEmail) => {
+  if (!classroomId || !userEmail) {
+    return null;
+  }
+
+  return `${CHAT_CACHE_KEY_PREFIX}:${classroomId}:${userEmail}`;
+};
+
+const getMessageTimestamp = (message) => {
+  const rawDate = message?.created_date || message?.created_at;
+  const timestamp = rawDate ? new Date(rawDate).getTime() : Number.NaN;
+  return Number.isFinite(timestamp) ? timestamp : Number.NaN;
+};
+
+const filterMessagesWithinTtl = (messages, now = Date.now()) => {
+  return (Array.isArray(messages) ? messages : []).filter((message) => {
+    const timestamp = getMessageTimestamp(message);
+    return Number.isFinite(timestamp) && now - timestamp <= CHAT_CACHE_TTL_MS;
+  });
+};
+
+const mergeUniqueMessages = (currentMessages, incomingMessages) => {
+  const merged = [...(Array.isArray(currentMessages) ? currentMessages : [])];
+  const seenIds = new Set(merged.map((message) => message.id).filter(Boolean));
+
+  (Array.isArray(incomingMessages) ? incomingMessages : []).forEach((message) => {
+    if (!message) {
+      return;
+    }
+
+    if (message.id && seenIds.has(message.id)) {
+      return;
+    }
+
+    if (message.id) {
+      seenIds.add(message.id);
+    }
+
+    merged.push(message);
+  });
+
+  return merged.sort((a, b) => {
+    const left = getMessageTimestamp(a);
+    const right = getMessageTimestamp(b);
+
+    if (!Number.isFinite(left) && !Number.isFinite(right)) {
+      return 0;
+    }
+
+    if (!Number.isFinite(left)) {
+      return 1;
+    }
+
+    if (!Number.isFinite(right)) {
+      return -1;
+    }
+
+    return left - right;
+  });
 };
 
 const extractErrorLineNumbers = (errorText) => {
@@ -121,6 +184,7 @@ export default function Classroom() {
   const interventionRoomId = urlParams.get('room');
   const returnTo = urlParams.get('returnTo');
   const { user, getAuthHeaders } = useAuth();
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [resolvedRoomId, setResolvedRoomId] = useState(interventionRoomId || null);
   const roomType = resolvedRoomId ? 'intervention' : 'classroom';
@@ -148,6 +212,7 @@ export default function Classroom() {
   const latestLanguageRef = useRef('javascript');
   const autoSaveInitialized = useRef(false);
   const previousMobileState = useRef(isMobileLayout);
+  const chatCacheKey = useMemo(() => getChatCacheKey(classroomId, user?.email), [classroomId, user?.email]);
   
   // Real-time collaboration
   const { 
@@ -180,6 +245,18 @@ export default function Classroom() {
     enabled: Boolean(classroomId && user?.email),
   });
 
+  const canBroadcastCodeChanges = useMemo(() => {
+    if (!user?.email) {
+      return false;
+    }
+
+    if (user.role === 'admin') {
+      return true;
+    }
+
+    return Boolean(classroom?.faculty_email && classroom.faculty_email === user.email);
+  }, [classroom?.faculty_email, user?.email, user?.role]);
+
   const { data: messageHistory = [] } = useQuery({
     queryKey: ['classroomMessages', classroomId],
     queryFn: async () => {
@@ -204,8 +281,67 @@ export default function Classroom() {
   });
 
   useEffect(() => {
-    setChatMessages(messageHistory);
+    if (!chatCacheKey) {
+      return;
+    }
+
+    try {
+      const rawCache = globalThis.localStorage?.getItem(chatCacheKey);
+      if (!rawCache) {
+        return;
+      }
+
+      const parsedCache = JSON.parse(rawCache);
+      let cachedMessages = [];
+      if (Array.isArray(parsedCache?.messages)) {
+        cachedMessages = parsedCache.messages;
+      } else if (Array.isArray(parsedCache)) {
+        cachedMessages = parsedCache;
+      }
+
+      const normalizedCachedMessages = cachedMessages.map(normalizeMessage);
+      const ttlMessages = filterMessagesWithinTtl(normalizedCachedMessages);
+
+      if (ttlMessages.length === 0) {
+        globalThis.localStorage?.removeItem(chatCacheKey);
+        return;
+      }
+
+      setChatMessages(ttlMessages);
+    } catch (cacheError) {
+      console.warn('Failed to restore cached classroom chat messages:', cacheError);
+    }
+  }, [chatCacheKey]);
+
+  useEffect(() => {
+    setChatMessages((previousMessages) => {
+      const previousWithinTtl = filterMessagesWithinTtl(previousMessages);
+      const mergedMessages = mergeUniqueMessages(previousWithinTtl, messageHistory);
+      return filterMessagesWithinTtl(mergedMessages);
+    });
   }, [messageHistory, classroomId]);
+
+  useEffect(() => {
+    if (!chatCacheKey) {
+      return;
+    }
+
+    const messagesWithinTtl = filterMessagesWithinTtl(chatMessages);
+
+    try {
+      if (messagesWithinTtl.length === 0) {
+        globalThis.localStorage?.removeItem(chatCacheKey);
+        return;
+      }
+
+      globalThis.localStorage?.setItem(chatCacheKey, JSON.stringify({
+        cachedAt: new Date().toISOString(),
+        messages: messagesWithinTtl
+      }));
+    } catch (cacheError) {
+      console.warn('Failed to persist classroom chat messages to cache:', cacheError);
+    }
+  }, [chatCacheKey, chatMessages]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -364,7 +500,14 @@ export default function Classroom() {
 
     // Listen for code changes from other users
     const unsubscribeCodeChange = on(COLLABORATION_EVENTS.CODE_CHANGE, (data) => {
-      if (data.sender_email !== user?.email && data.metadata) {
+      const senderEmail = data?.sender_email;
+      const senderRole = data?.sender_role;
+      const isTrustedCodeAuthor =
+        senderRole === 'faculty' ||
+        senderRole === 'admin' ||
+        senderEmail === classroom?.faculty_email;
+
+      if (senderEmail !== user?.email && data.metadata && isTrustedCodeAuthor) {
         const { code: newCode, language: newLang } = data.metadata;
         if (newCode && newCode !== lastCodeSync.current) {
           setCode((previousCode) => (previousCode === newCode ? previousCode : newCode));
@@ -434,6 +577,16 @@ export default function Classroom() {
       navigate(interventionReturnTarget, { replace: true });
     });
 
+    const unsubscribeRemoved = on('collaboration:removed', (data) => {
+      const removedClassroomId = String(data?.classroomId || '');
+      if (!removedClassroomId || removedClassroomId !== String(classroomId || '')) {
+        return;
+      }
+
+      setError('You were removed from this classroom by faculty.');
+      navigate('/student-dashboard', { replace: true });
+    });
+
     const unsubscribeTerminalStarted = on(COLLABORATION_EVENTS.TERMINAL_STARTED, () => {
       setInteractiveSessionActive(true);
       setIsRunning(true);
@@ -491,6 +644,7 @@ export default function Classroom() {
       unsubscribeExecutionResult,
       unsubscribeChatMessage,
       unsubscribeInterventionClosed,
+      unsubscribeRemoved,
       unsubscribeTerminalStarted,
       unsubscribeTerminalOutput,
       unsubscribeTerminalError,
@@ -500,7 +654,7 @@ export default function Classroom() {
     return () => {
       unsubscribeFunctions.forEach(fn => fn());
     };
-  }, [isConnected, on, user, COLLABORATION_EVENTS]);
+  }, [isConnected, on, user, classroom?.faculty_email, classroomId, navigate, COLLABORATION_EVENTS]);
 
   useEffect(() => {
     if (!classroom?.language) {
@@ -537,8 +691,57 @@ export default function Classroom() {
     },
   });
 
+  const removeStudentMutation = useMutation({
+    mutationFn: async (studentEmail) => {
+      const response = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/students/remove`, {
+        method: 'POST',
+        headers: {
+          ...getAuthHeaders(),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ student_email: studentEmail })
+      });
+
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(payload?.message || payload?.error || 'Failed to remove student from classroom.');
+      }
+
+      return payload;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['classroom', classroomId] });
+      queryClient.invalidateQueries({ queryKey: ['classrooms'] });
+      queryClient.invalidateQueries({ queryKey: ['facultyClassrooms'] });
+    },
+    onError: (mutationError) => {
+      setError(mutationError?.message || 'Failed to remove student from classroom.');
+    }
+  });
+
+  const handleRemoveStudent = async (participant) => {
+    const studentEmail = String(participant?.email || '').trim().toLowerCase();
+
+    if (!studentEmail || !classroomId) {
+      return;
+    }
+
+    const confirmed = globalThis.window?.confirm(`Remove ${studentEmail} from this classroom?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setError('');
+    await removeStudentMutation.mutateAsync(studentEmail);
+  };
+
   // Enhanced code change handler with real-time sync and version control
   const handleCodeChange = (newCode) => {
+    if (!canBroadcastCodeChanges) {
+      return;
+    }
+
     setCode(newCode);
     pendingCodeSync.current = newCode;
 
@@ -579,6 +782,10 @@ export default function Classroom() {
 
   // Handle language change with sync
   const handleLanguageChange = (newLanguage) => {
+    if (!canBroadcastCodeChanges) {
+      return;
+    }
+
     setLanguage(newLanguage);
     
     if (isConnected) {
@@ -817,6 +1024,10 @@ export default function Classroom() {
 
   // Handle code restoration from version history
   const handleRestoreCode = (restoredCode, restoredLanguage) => {
+    if (!canBroadcastCodeChanges) {
+      return;
+    }
+
     setCode(restoredCode);
     setLanguage(restoredLanguage);
     
@@ -937,7 +1148,14 @@ export default function Classroom() {
         {isMobileLayout ? (
           !leftCollapsed && (
             <div className="border-b border-slate-800/50 bg-[#070c14] flex-shrink-0 h-44 overflow-hidden">
-              <ParticipantsPanel participants={participants} facultyEmail={classroom?.faculty_email} />
+              <ParticipantsPanel
+                participants={participants}
+                facultyEmail={classroom?.faculty_email}
+                currentUserEmail={user?.email}
+                currentUserRole={user?.role}
+                onRemoveStudent={handleRemoveStudent}
+                removingStudentEmail={removeStudentMutation.isPending ? removeStudentMutation.variables : null}
+              />
             </div>
           )
         ) : (
@@ -946,7 +1164,14 @@ export default function Classroom() {
             transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
             className="border-r border-slate-800/50 bg-[#070c14] flex-shrink-0 overflow-hidden"
           >
-            <ParticipantsPanel participants={participants} facultyEmail={classroom?.faculty_email} />
+            <ParticipantsPanel
+              participants={participants}
+              facultyEmail={classroom?.faculty_email}
+              currentUserEmail={user?.email}
+              currentUserRole={user?.role}
+              onRemoveStudent={handleRemoveStudent}
+              removingStudentEmail={removeStudentMutation.isPending ? removeStudentMutation.variables : null}
+            />
           </motion.div>
         )}
 
@@ -978,6 +1203,7 @@ export default function Classroom() {
               onRun={handleRun}
               onSubmit={handleSubmit}
               isRunning={isRunning || interactiveSessionActive}
+              readOnly={!canBroadcastCodeChanges}
               errorLineNumbers={errorLineNumbers}
             />
           </div>
