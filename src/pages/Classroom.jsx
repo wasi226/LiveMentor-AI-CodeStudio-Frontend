@@ -178,9 +178,19 @@ const isMissingInputRuntimeError = (errorText) => {
 
 const MISSING_INPUT_HELP = 'Program expected more input. Add all required values in Program Input (stdin) and run again.';
 
+const isSubmissionFinalized = (submission) => {
+  const normalizedStatus = String(submission?.status || '').toLowerCase();
+  if (normalizedStatus) {
+    return !['draft', 'pending'].includes(normalizedStatus);
+  }
+
+  return Boolean(submission?.submitted_at || submission?.submittedAt);
+};
+
 export default function Classroom() {
   const urlParams = new URLSearchParams(globalThis.location.search);
   const classroomId = urlParams.get('id');
+  const assignmentIdFromUrl = urlParams.get('assignment');
   const interventionRoomId = urlParams.get('room');
   const returnTo = urlParams.get('returnTo');
   const { user, getAuthHeaders } = useAuth();
@@ -197,6 +207,7 @@ export default function Classroom() {
   const [output, setOutput] = useState('');
   const [error, setError] = useState('');
   const [isRunning, setIsRunning] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [rightTab, setRightTab] = useState('chat');
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -245,6 +256,44 @@ export default function Classroom() {
     enabled: Boolean(classroomId && user?.email),
   });
 
+  const { data: studentSubmissions = [] } = useQuery({
+    queryKey: ['studentAssignmentSubmissions', classroomId, user?.email],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE_URL}/api/submissions?classroom_id=${encodeURIComponent(classroomId)}&limit=200&sort=desc&sortBy=createdAt`,
+        { headers: getAuthHeaders() }
+      );
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      return payload.submissions || [];
+    },
+    enabled: Boolean(classroomId && user?.email),
+    refetchInterval: 15000,
+  });
+
+  const { data: classroomAssignmentId = null } = useQuery({
+    queryKey: ['classroomAssignmentId', classroomId],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE_URL}/api/assignments?classroom_id=${encodeURIComponent(classroomId)}&limit=1&sort=desc&sortBy=createdAt`,
+        { headers: getAuthHeaders() }
+      );
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      const assignment = (payload.assignments || [])[0];
+      return assignment?.id || assignment?._id || null;
+    },
+    enabled: Boolean(classroomId && user?.email),
+  });
+
   const canBroadcastCodeChanges = useMemo(() => {
     if (!user?.email) {
       return false;
@@ -256,6 +305,23 @@ export default function Classroom() {
 
     return Boolean(classroom?.faculty_email && classroom.faculty_email === user.email);
   }, [classroom?.faculty_email, user?.email, user?.role]);
+
+  const canEditCode = useMemo(() => {
+    return Boolean(user?.email && classroomId);
+  }, [classroomId, user?.email]);
+
+  const effectiveAssignmentId = assignmentIdFromUrl || classroomAssignmentId;
+
+  const hasSubmittedCurrentAssignment = useMemo(() => {
+    if (!effectiveAssignmentId) {
+      return false;
+    }
+
+    return studentSubmissions.some((submission) => (
+      String(submission?.assignment_id || '') === String(effectiveAssignmentId) &&
+      isSubmissionFinalized(submission)
+    ));
+  }, [effectiveAssignmentId, studentSubmissions]);
 
   const { data: messageHistory = [] } = useQuery({
     queryKey: ['classroomMessages', classroomId],
@@ -738,7 +804,7 @@ export default function Classroom() {
 
   // Enhanced code change handler with real-time sync and version control
   const handleCodeChange = (newCode) => {
-    if (!canBroadcastCodeChanges) {
+    if (!canEditCode) {
       return;
     }
 
@@ -748,8 +814,8 @@ export default function Classroom() {
     // Mark changes for version control auto-save
     versionControl.markPendingChanges();
 
-    // Send typing indicator immediately
-    if (isConnected) {
+    // Send typing indicator only for users allowed to broadcast.
+    if (isConnected && canBroadcastCodeChanges) {
       sendTyping();
     }
 
@@ -759,7 +825,7 @@ export default function Classroom() {
     }
 
     codeChangeTimeout.current = setTimeout(() => {
-      if (isConnected && pendingCodeSync.current === newCode && newCode !== lastCodeSync.current) {
+      if (isConnected && canBroadcastCodeChanges && pendingCodeSync.current === newCode && newCode !== lastCodeSync.current) {
         syncCode(newCode, language);
         lastCodeSync.current = newCode;
       }
@@ -782,13 +848,13 @@ export default function Classroom() {
 
   // Handle language change with sync
   const handleLanguageChange = (newLanguage) => {
-    if (!canBroadcastCodeChanges) {
+    if (!canEditCode) {
       return;
     }
 
     setLanguage(newLanguage);
     
-    if (isConnected) {
+    if (isConnected && canBroadcastCodeChanges) {
       emit(COLLABORATION_EVENTS.LANGUAGE_CHANGE, {
         language: newLanguage,
         timestamp: Date.now()
@@ -945,6 +1011,17 @@ export default function Classroom() {
       return;
     }
 
+    if (isSubmitting) {
+      return;
+    }
+
+    if (hasSubmittedCurrentAssignment) {
+      setError('Assignment already submitted. You cannot submit it again.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
     try {
       const assignmentsResponse = await fetch(
         `${API_BASE_URL}/api/assignments?classroom_id=${encodeURIComponent(classroomId)}&limit=1&sort=desc&sortBy=createdAt`,
@@ -967,7 +1044,7 @@ export default function Classroom() {
         throw new Error('No assignment is available for this classroom yet.');
       }
 
-      const assignmentId = assignment.id || assignment._id;
+      const assignmentId = effectiveAssignmentId || assignment.id || assignment._id;
       const submissionResponse = await fetch(`${API_BASE_URL}/api/submissions`, {
         method: 'POST',
         headers: {
@@ -1016,15 +1093,19 @@ export default function Classroom() {
 
       setSubmitted(true);
       setTimeout(() => setSubmitted(false), 3000);
+      queryClient.invalidateQueries({ queryKey: ['studentAssignmentSubmissions'] });
+      queryClient.invalidateQueries({ queryKey: ['studentSubmissions'] });
     } catch (submitError) {
       console.error('Submission failed:', submitError);
       setError(submitError.message || 'Failed to submit code.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   // Handle code restoration from version history
   const handleRestoreCode = (restoredCode, restoredLanguage) => {
-    if (!canBroadcastCodeChanges) {
+    if (!canEditCode) {
       return;
     }
 
@@ -1032,7 +1113,7 @@ export default function Classroom() {
     setLanguage(restoredLanguage);
     
     // Update collaboration if connected
-    if (isConnected) {
+    if (isConnected && canBroadcastCodeChanges) {
       syncCode(restoredCode, restoredLanguage);
     }
   };
@@ -1066,6 +1147,13 @@ export default function Classroom() {
   const participants = Array.from(participantMap.values());
   const onlineCount = activeUsers.size || participants.length;
   const currentFileExtension = LANGUAGE_EXTENSIONS[language] || 'txt';
+  let submitButtonLabel = 'Submit';
+  if (isSubmitting) {
+    submitButtonLabel = 'Submitting...';
+  }
+  if (hasSubmittedCurrentAssignment) {
+    submitButtonLabel = 'Submitted';
+  }
 
   return (
     <div className="h-screen bg-[#0a0f1a] flex flex-col overflow-hidden select-none">
@@ -1203,8 +1291,10 @@ export default function Classroom() {
               onRun={handleRun}
               onSubmit={handleSubmit}
               isRunning={isRunning || interactiveSessionActive}
-              readOnly={!canBroadcastCodeChanges}
+              readOnly={!canEditCode}
               errorLineNumbers={errorLineNumbers}
+              submitDisabled={hasSubmittedCurrentAssignment || isSubmitting}
+              submitLabel={submitButtonLabel}
             />
           </div>
         </div>

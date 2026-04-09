@@ -35,8 +35,17 @@ const normalizeSubmission = (submission) => ({
   id: submission.id || submission._id,
   created_date: submission.created_date || submission.created_at || submission.createdAt,
   updated_date: submission.updated_date || submission.updated_at || submission.updatedAt,
-  submitted_at: submission.submitted_at || submission.submittedAt || submission.created_date || submission.created_at
+  submitted_at: submission.submitted_at || submission.submittedAt || null
 });
+
+const isSubmissionFinalized = (submission) => {
+  const normalizedStatus = String(submission?.status || '').toLowerCase();
+  if (normalizedStatus) {
+    return !['draft', 'pending'].includes(normalizedStatus);
+  }
+
+  return Boolean(submission?.submitted_at || submission?.submittedAt);
+};
 
 const parseApiResponse = async (response) => {
   const data = await response.json().catch(() => ({}));
@@ -224,6 +233,21 @@ export default function StudentDashboard() {
     return map;
   }, [assignments]);
 
+  const submittedAssignmentIds = useMemo(() => {
+    const ids = new Set();
+    submissions.forEach((submission) => {
+      if (!isSubmissionFinalized(submission)) {
+        return;
+      }
+
+      const assignmentId = submission?.assignment_id;
+      if (assignmentId) {
+        ids.add(String(assignmentId));
+      }
+    });
+    return ids;
+  }, [submissions]);
+
   let classroomsContent;
 
   if (loadingClassrooms) {
@@ -343,7 +367,10 @@ export default function StudentDashboard() {
                   <span className="text-[11px] text-slate-600">{assignments.length} assigned to you</span>
                 </div>
                 <div className="grid sm:grid-cols-2 gap-2.5">
-                  {assignments.slice(0, 4).map((a, i) => (
+                  {assignments.slice(0, 4).map((a, i) => {
+                    const isSubmitted = submittedAssignmentIds.has(String(a.id));
+
+                    return (
                     <div
                       key={a.id}
                       className="group rounded-lg border border-slate-800/60 bg-slate-900/30 p-4 hover:border-slate-700/60 hover:bg-slate-900/60 transition-all duration-200 cursor-pointer"
@@ -357,21 +384,26 @@ export default function StudentDashboard() {
                           <h4 className="text-[13px] font-semibold text-slate-200 group-hover:text-white transition-colors line-clamp-1">{a.title}</h4>
                           <p className="text-[11px] text-slate-600 mt-0.5 line-clamp-1">{a.description || 'No description'}</p>
 
-                          {a.due_date && (
-                            <div className={`flex items-center gap-1.5 mt-2 text-[11px] font-medium ${moment(a.due_date).isBefore(moment()) ? 'text-rose-400' : moment(a.due_date).diff(moment(), 'days') <= 2 ? 'text-amber-400' : 'text-slate-600'}`}>
-                              <Clock style={{ width: 11, height: 11 }} />
+                          {isSubmitted ? (
+                            <div className="flex items-center gap-1.5 mt-2.5 text-[12px] font-bold px-2.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                              Assignment Submitted
+                            </div>
+                          ) : a.due_date && (
+                            <div className={`flex items-center gap-1.5 mt-2.5 text-[12px] font-bold px-2.5 py-1.5 rounded-md ${moment(a.due_date).isBefore(moment()) ? 'bg-red-500/20 text-red-400 border border-red-500/30' : moment(a.due_date).diff(moment(), 'days') <= 2 ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-slate-800/40 text-slate-400 border border-slate-700/40'}`}>
+                              <Clock style={{ width: 12, height: 12 }} />
                               {moment(a.due_date).isBefore(moment())
-                                ? `Overdue by ${Math.abs(moment(a.due_date).diff(moment(), 'days'))} day${Math.abs(moment(a.due_date).diff(moment(), 'days')) !== 1 ? 's' : ''}`
-                                : moment(a.due_date).diff(moment(), 'days') === 0 ? 'Due today'
-                                : moment(a.due_date).diff(moment(), 'days') === 1 ? 'Due tomorrow'
-                                : `Due ${moment(a.due_date).format('MMM D')}`
+                                ? `🚨 OVERDUE by ${Math.abs(moment(a.due_date).diff(moment(), 'days'))} day${Math.abs(moment(a.due_date).diff(moment(), 'days')) !== 1 ? 's' : ''}`
+                                : moment(a.due_date).diff(moment(), 'days') === 0 ? '⏰ DUE TODAY'
+                                : moment(a.due_date).diff(moment(), 'days') === 1 ? '⏰ DUE TOMORROW'
+                                : `📅 Due ${moment(a.due_date).format('MMM D, h:mm A')}`
                               }
                             </div>
                           )}
                         </div>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

@@ -229,8 +229,9 @@ export default function FacultyDashboard() {
     topStruggling: false
   });
   const [selectedSubmission, setSelectedSubmission] = useState(null);
+  const [expandedAssignmentId, setExpandedAssignmentId] = useState(null);
   const [form, setForm] = useState({ name: '', description: '', language: 'javascript', max_students: 30 });
-  const [assignmentForm, setAssignmentForm] = useState({ title: '', description: '', difficulty: 'medium', max_score: 100, due_date: '' });
+  const [assignmentForm, setAssignmentForm] = useState({ title: '', description: '', due_date: '' });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { user, logout, getAuthHeaders, handleUnauthorizedResponse } = useAuth();
@@ -370,6 +371,20 @@ export default function FacultyDashboard() {
       })
       .slice(0, 20);
   }, [allSubmissions, selectedClassroomId]);
+
+  const getSubmissionsForAssignment = (assignmentId) => {
+    return allSubmissions
+      .filter((submission) => String(submission.assignment_id) === String(assignmentId))
+      .sort((a, b) => {
+        const aTime = new Date(a.submitted_at || a.created_at || a.created_date || 0).getTime();
+        const bTime = new Date(b.submitted_at || b.created_at || b.created_date || 0).getTime();
+        return bTime - aTime;
+      });
+  };
+
+  const getSubmissionCountForAssignment = (assignmentId) => {
+    return allSubmissions.filter((submission) => String(submission.assignment_id) === String(assignmentId)).length;
+  };
 
   const { data: persistedActivity } = useQuery({
     queryKey: [
@@ -895,7 +910,7 @@ export default function FacultyDashboard() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
       setAssignmentDialogOpen(false);
-      setAssignmentForm({ title: '', description: '', difficulty: 'medium', max_score: 100, due_date: '' });
+      setAssignmentForm({ title: '', description: '', due_date: '' });
     },
   });
 
@@ -1143,31 +1158,8 @@ export default function FacultyDashboard() {
                             }}
                             className="w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-[13px] placeholder:text-slate-600 outline-none focus:border-indigo-500/50 transition-colors resize-none h-20"
                           />
-                          <Select value={assignmentForm.difficulty} onValueChange={(v) => {
-                            createAssignmentMutation.reset();
-                            setAssignmentForm(p => ({ ...p, difficulty: v }));
-                          }}>
-                            <SelectTrigger className="bg-slate-900 border-slate-800 text-white h-10 text-[13px]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent className="bg-slate-900 border-slate-700">
-                              {['easy', 'medium', 'hard'].map(l => (
-                                <SelectItem key={l} value={l} className="text-slate-200 focus:bg-slate-800 focus:text-white text-[13px]">{l.charAt(0).toUpperCase() + l.slice(1)}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
                           <input
-                            placeholder="Max score (optional)"
-                            type="number"
-                            value={assignmentForm.max_score}
-                            onChange={(e) => {
-                              createAssignmentMutation.reset();
-                              setAssignmentForm(p => ({ ...p, max_score: parseInt(e.target.value) || 100 }));
-                            }}
-                            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-[13px] placeholder:text-slate-600 outline-none focus:border-indigo-500/50 transition-colors"
-                          />
-                          <input
-                            placeholder="Due date (optional)"
+                            placeholder="Deadline date & time *"
                             type="datetime-local"
                             value={assignmentForm.due_date}
                             onChange={(e) => {
@@ -1181,7 +1173,7 @@ export default function FacultyDashboard() {
                           )}
                           <Button
                             onClick={() => createAssignmentMutation.mutate(assignmentForm)}
-                            disabled={assignmentForm.title.trim().length < 3 || createAssignmentMutation.isPending}
+                            disabled={assignmentForm.title.trim().length < 3 || !assignmentForm.due_date || createAssignmentMutation.isPending}
                             className="w-full bg-indigo-600 hover:bg-indigo-500 h-9 text-[13px]"
                           >
                             {createAssignmentMutation.isPending ? 'Creating...' : 'Create Assignment'}
@@ -1192,49 +1184,99 @@ export default function FacultyDashboard() {
                   )}
 
                   {selectedClassroom && allAssignments.some(a => String(a.classroom_id) === String(selectedClassroom.id)) ? (
-                    <div className="space-y-2 max-h-64 overflow-auto">
+                    <div className="space-y-2 max-h-96 overflow-auto">
                       {allAssignments
                         .filter(a => String(a.classroom_id) === String(selectedClassroom.id))
                         .sort((a, b) => new Date(b.createdAt || b.created_date) - new Date(a.createdAt || a.created_date))
-                        .map((assignment) => (
-                          <div key={assignment.id || assignment._id} className="rounded-lg border border-slate-800/60 bg-slate-900/40 p-3">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                <p className="text-[11px] font-semibold text-slate-200 truncate">{assignment.title}</p>
-                                <p className="text-[10px] text-slate-500 truncate mt-0.5">{assignment.description || 'No description'}</p>
-                                <div className="flex items-center gap-2 mt-1.5">
-                                  <span className={`text-[9px] px-1.5 py-0.5 rounded ${assignment.is_assigned ? 'text-emerald-300 bg-emerald-500/10' : 'text-amber-300 bg-amber-500/10'}`}>
-                                    {assignment.is_assigned ? '✓ Assigned' : 'Draft'}
-                                  </span>
-                                  {assignment.due_date && (
-                                    <span className="text-[9px] text-slate-600">Due: {moment(assignment.due_date).format('MM/DD')}</span>
+                        .map((assignment) => {
+                          const assignmentId = assignment.id || assignment._id;
+                          const submissionCount = getSubmissionCountForAssignment(assignmentId);
+                          const isExpanded = expandedAssignmentId === assignmentId;
+                          const submissions = isExpanded ? getSubmissionsForAssignment(assignmentId) : [];
+                          
+                          return (
+                            <div key={assignmentId} className="rounded-lg border border-slate-800/60 bg-slate-900/40 overflow-hidden">
+                              <button
+                                onClick={() => setExpandedAssignmentId(isExpanded ? null : assignmentId)}
+                                className="w-full p-3 hover:bg-slate-900/60 transition-colors text-left"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-[11px] font-semibold text-slate-200 truncate">{assignment.title}</p>
+                                    <p className="text-[10px] text-slate-500 truncate mt-0.5">{assignment.description || 'No description'}</p>
+                                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${assignment.is_assigned ? 'text-emerald-300 bg-emerald-500/10' : 'text-amber-300 bg-amber-500/10'}`}>
+                                        {assignment.is_assigned ? '✓ Assigned' : 'Draft'}
+                                      </span>
+                                      {assignment.due_date && (
+                                        <span className="text-[9px] text-slate-600">Due: {moment(assignment.due_date).format('MM/DD')}</span>
+                                      )}
+                                      {assignment.is_assigned && (
+                                        <span className={`text-[9px] px-2 py-0.5 rounded font-semibold ${submissionCount > 0 ? 'text-blue-300 bg-blue-500/15 border border-blue-500/20' : 'text-slate-500 bg-slate-800/30'}`}>
+                                          📤 {submissionCount} submission{submissionCount !== 1 ? 's' : ''}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  {!assignment.is_assigned ? (
+                                    <Button
+                                      size="sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/assign-to-class`, {
+                                          method: 'POST',
+                                          headers: getAuthHeaders(),
+                                          body: JSON.stringify({})
+                                        })
+                                          .then(r => r.json())
+                                          .then(() => {
+                                            queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
+                                          })
+                                          .catch(err => console.error('Assignment error:', err));
+                                      }}
+                                      className="h-6 text-[10px] px-2 bg-emerald-600 hover:bg-emerald-500 flex-shrink-0"
+                                    >
+                                      Assign
+                                    </Button>
+                                  ) : (
+                                    <div className="text-[11px] text-slate-500 flex-shrink-0">
+                                      {isExpanded ? '▼' : '▶'}
+                                    </div>
                                   )}
                                 </div>
-                              </div>
-                              {!assignment.is_assigned && (
-                                <Button
-                                  size="sm"
-                                  onClick={() => {
-                                    const assignmentId = assignment.id || assignment._id;
-                                    fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/assign-to-class`, {
-                                      method: 'POST',
-                                      headers: getAuthHeaders(),
-                                      body: JSON.stringify({})
-                                    })
-                                      .then(r => r.json())
-                                      .then(() => {
-                                        queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
-                                      })
-                                      .catch(err => console.error('Assignment error:', err));
-                                  }}
-                                  className="h-6 text-[10px] px-2 bg-emerald-600 hover:bg-emerald-500 flex-shrink-0"
-                                >
-                                  Assign
-                                </Button>
+                              </button>
+
+                              {isExpanded && assignment.is_assigned && submissionCount > 0 && (
+                                <div className="border-t border-slate-800/40 bg-slate-950/30 p-2 space-y-1.5 max-h-48 overflow-auto">
+                                  <p className="text-[10px] text-slate-400 px-1 py-1">Who Submitted:</p>
+                                  {submissions.map((submission) => (
+                                    <button
+                                      key={submission.id || submission._id}
+                                      onClick={() => setSelectedSubmission(submission)}
+                                      className="w-full text-left rounded px-2 py-1.5 hover:bg-slate-800/40 transition-colors border border-slate-800/30 bg-slate-900/20"
+                                    >
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="min-w-0 flex-1">
+                                          <p className="text-[10px] font-semibold text-slate-200 truncate">{submission.student_email}</p>
+                                          <p className="text-[9px] text-slate-500">{submission.language} · {moment(submission.submitted_at || submission.created_at || submission.created_date).fromNow()}</p>
+                                        </div>
+                                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 ${(submission.score || 0) >= 70 ? 'text-green-300 bg-green-500/15' : (submission.score || 0) >= 50 ? 'text-yellow-300 bg-yellow-500/15' : 'text-slate-400 bg-slate-700/20'}`}>
+                                          {submission.score ?? '—'}%
+                                        </span>
+                                      </div>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+
+                              {isExpanded && assignment.is_assigned && submissionCount === 0 && (
+                                <div className="border-t border-slate-800/40 bg-slate-950/30 p-3 text-center">
+                                  <p className="text-[10px] text-slate-500">No submissions yet</p>
+                                </div>
                               )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                     </div>
                   ) : (
                     <p className="text-[11px] text-slate-600 text-center py-4">No assignments yet. Create one to get started!</p>

@@ -30,7 +30,7 @@ export const DEFAULT_CODE_SNIPPETS = {
   rust:       `// Welcome to CodeClass.ai\nfn main() {\n    // Write your solution here\n    println!("Hello, world!");\n}`,
 };
 
-export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning, readOnly = false, errorLineNumbers = [] }) {
+export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning, readOnly = false, errorLineNumbers = [], submitDisabled = false, submitLabel = 'Submit' }) {
   const [copied, setCopied] = useState(false);
   const [showVisualizer, setShowVisualizer] = useState(false);
   const textareaRef = useRef(null);
@@ -247,11 +247,12 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
           </Button>
           <Button
             onClick={onSubmit}
+            disabled={readOnly || submitDisabled}
             size="sm"
             className="h-7 px-2 sm:px-3 bg-indigo-600/90 hover:bg-indigo-600 text-white text-[11px] font-semibold gap-1.5 shadow-sm"
           >
             <Send style={{ width: 11, height: 11 }} />
-            <span className="hidden sm:inline">Submit</span>
+            <span className="hidden sm:inline">{submitLabel}</span>
           </Button>
         </div>
       </div>
