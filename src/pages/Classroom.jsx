@@ -198,7 +198,14 @@ export default function Classroom() {
   const navigate = useNavigate();
   const [resolvedRoomId, setResolvedRoomId] = useState(interventionRoomId || null);
   const roomType = resolvedRoomId ? 'intervention' : 'classroom';
-  const interventionReturnTarget = returnTo || (classroomId ? `/faculty-dashboard?classroomId=${encodeURIComponent(classroomId)}` : '/faculty-dashboard');
+  const isFacultyOrAdmin = user?.role === 'faculty' || user?.role === 'admin';
+  const facultyDashboardTarget = classroomId
+    ? `/faculty-dashboard?classroomId=${encodeURIComponent(classroomId)}`
+    : '/faculty-dashboard';
+  const defaultDashboardTarget = isFacultyOrAdmin
+    ? facultyDashboardTarget
+    : '/student-dashboard';
+  const interventionReturnTarget = returnTo || defaultDashboardTarget;
 
   const [code, setCode] = useState(DEFAULT_CODE_SNIPPETS.javascript);
   const [language, setLanguage] = useState('javascript');
@@ -479,7 +486,7 @@ export default function Classroom() {
 
   const handleExitRoom = async () => {
     if (roomType !== 'intervention') {
-      navigate('/student-dashboard');
+      navigate(defaultDashboardTarget);
       return;
     }
 
@@ -720,7 +727,7 @@ export default function Classroom() {
     return () => {
       unsubscribeFunctions.forEach(fn => fn());
     };
-  }, [isConnected, on, user, classroom?.faculty_email, classroomId, navigate, COLLABORATION_EVENTS]);
+  }, [isConnected, on, user, classroom?.faculty_email, classroomId, navigate, COLLABORATION_EVENTS, isFacultyOrAdmin, interventionReturnTarget]);
 
   useEffect(() => {
     if (!classroom?.language) {
