@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Plus, BookOpen, FileCode, TrendingUp, Activity, Clock, Zap, LogOut } from 'lucide-react';
@@ -9,6 +9,7 @@ import StatCard from '@/components/ui-custom/StatCard';
 import ClassroomCard from '@/components/ui-custom/ClassroomCard';
 import TopBar from '@/components/ui-custom/TopBar';
 import { useAuth } from '@/lib/AuthContext';
+import { useCollaboration } from '@/contexts/CollaborationContext';
 import moment from 'moment';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
@@ -61,9 +62,23 @@ export default function StudentDashboard() {
   const [joinCode, setJoinCode] = useState('');
   const [joinDialogOpen, setJoinDialogOpen] = useState(false);
   const [joinError, setJoinError] = useState('');
+  const [selectedPreviewClassroomId, setSelectedPreviewClassroomId] = useState('');
+  const [livePreview, setLivePreview] = useState({
+    code: '',
+    language: 'javascript',
+    senderName: '',
+    updatedAt: null
+  });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { user, logout, getAuthHeaders, handleUnauthorizedResponse } = useAuth();
+  const {
+    connect,
+    disconnect,
+    isConnected,
+    on,
+    COLLABORATION_EVENTS
+  } = useCollaboration();
 
   const handleLogout = async () => {
     try {
@@ -150,6 +165,91 @@ export default function StudentDashboard() {
     retry: false,
     refetchInterval: 15000,
   });
+
+  useEffect(() => {
+    if (!classrooms.length) {
+      setSelectedPreviewClassroomId('');
+      return;
+    }
+
+    const isCurrentSelectionValid = classrooms.some((classroom) => String(classroom.id) === String(selectedPreviewClassroomId));
+    if (!isCurrentSelectionValid) {
+      setSelectedPreviewClassroomId(String(classrooms[0].id));
+    }
+  }, [classrooms, selectedPreviewClassroomId]);
+
+  useEffect(() => {
+    if (!user?.email || !selectedPreviewClassroomId) {
+      disconnect();
+      return;
+    }
+
+    connect(selectedPreviewClassroomId, user);
+
+    return () => {
+      disconnect();
+    };
+  }, [selectedPreviewClassroomId, user, connect, disconnect]);
+
+  useEffect(() => {
+    if (!selectedPreviewClassroomId) {
+      return () => {};
+    }
+
+    const selectedClassroom = classrooms.find(
+      (classroom) => String(classroom.id) === String(selectedPreviewClassroomId)
+    );
+    const facultyEmail = selectedClassroom?.faculty_email;
+
+    const unsubscribeCodeChange = on(COLLABORATION_EVENTS.CODE_CHANGE, (event) => {
+      const senderEmail = event?.sender_email;
+      const senderRole = event?.sender_role;
+      const metadata = event?.metadata;
+
+      const isTrustedFacultyChange =
+        senderRole === 'faculty' ||
+        senderRole === 'admin' ||
+        (facultyEmail && senderEmail === facultyEmail);
+
+      if (!isTrustedFacultyChange || !metadata || typeof metadata.code !== 'string') {
+        return;
+      }
+
+      setLivePreview((previous) => ({
+        ...previous,
+        code: metadata.code,
+        language: metadata.language || previous.language || 'javascript',
+        senderName: event?.sender_name || senderEmail || 'Faculty',
+        updatedAt: new Date().toISOString()
+      }));
+    });
+
+    const unsubscribeLanguageChange = on(COLLABORATION_EVENTS.LANGUAGE_CHANGE, (event) => {
+      const senderEmail = event?.sender_email;
+      const senderRole = event?.sender_role;
+      const metadata = event?.metadata;
+
+      const isTrustedFacultyChange =
+        senderRole === 'faculty' ||
+        senderRole === 'admin' ||
+        (facultyEmail && senderEmail === facultyEmail);
+
+      if (!isTrustedFacultyChange || !metadata?.language) {
+        return;
+      }
+
+      setLivePreview((previous) => ({
+        ...previous,
+        language: metadata.language,
+        updatedAt: new Date().toISOString()
+      }));
+    });
+
+    return () => {
+      unsubscribeCodeChange();
+      unsubscribeLanguageChange();
+    };
+  }, [classrooms, selectedPreviewClassroomId, on, COLLABORATION_EVENTS]);
 
   const joinMutation = useMutation({
     mutationFn: async (code) => {
@@ -247,6 +347,16 @@ export default function StudentDashboard() {
     });
     return ids;
   }, [submissions]);
+
+  const selectedPreviewClassroom = useMemo(
+    () => classrooms.find((classroom) => String(classroom.id) === String(selectedPreviewClassroomId)) || null,
+    [classrooms, selectedPreviewClassroomId]
+  );
+
+  const previewLanguageLabel = useMemo(() => {
+    const rawLanguage = String(livePreview.language || 'javascript');
+    return rawLanguage.charAt(0).toUpperCase() + rawLanguage.slice(1);
+  }, [livePreview.language]);
 
   let classroomsContent;
 
@@ -411,6 +521,73 @@ export default function StudentDashboard() {
 
           {/* Right sidebar */}
           <div className="space-y-5">
+            {/* Live Faculty Preview */}
+            <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-b from-cyan-500/10 to-slate-900/20 p-4">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div>
+                  <h2 className="text-[14px] font-semibold text-cyan-200">Live Faculty Preview</h2>
+                  <p className="text-[11px] text-cyan-100/70 mt-0.5">Watch instructor code updates in real time</p>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${isConnected ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-300'}`}>
+                  {isConnected ? 'LIVE' : 'CONNECTING'}
+                </span>
+              </div>
+
+              <div className="space-y-3">
+                <select
+                  value={selectedPreviewClassroomId}
+                  onChange={(event) => {
+                    setSelectedPreviewClassroomId(event.target.value);
+                    setLivePreview({
+                      code: '',
+                      language: 'javascript',
+                      senderName: '',
+                      updatedAt: null
+                    });
+                  }}
+                  disabled={!classrooms.length}
+                  className="w-full px-3 py-2 bg-slate-900/80 border border-slate-700 rounded-lg text-[12px] text-slate-200 outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20"
+                >
+                  {classrooms.length === 0 ? (
+                    <option value="">No classrooms joined</option>
+                  ) : (
+                    classrooms.map((classroom) => (
+                      <option key={classroom.id} value={classroom.id}>
+                        {classroom.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+
+                <div className="rounded-lg border border-slate-800/80 bg-slate-950/80 overflow-hidden">
+                  <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800/80 bg-slate-900/70">
+                    <span className="text-[11px] text-slate-300 font-medium">{previewLanguageLabel}</span>
+                    <span className="text-[10px] text-slate-500">
+                      {livePreview.updatedAt ? `Updated ${moment(livePreview.updatedAt).fromNow()}` : 'Waiting for faculty activity'}
+                    </span>
+                  </div>
+                  <pre className="p-3 text-[11px] leading-relaxed text-slate-200 max-h-44 overflow-auto font-mono">
+                    {livePreview.code || '// Live faculty code will appear here once your instructor starts typing in this classroom.'}
+                  </pre>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] text-slate-500 truncate">
+                    {livePreview.senderName ? `Streaming from: ${livePreview.senderName}` : 'Source: Faculty session'}
+                  </p>
+                  {selectedPreviewClassroom && (
+                    <Button
+                      size="sm"
+                      onClick={() => navigate(`/classroom?id=${encodeURIComponent(selectedPreviewClassroom.id)}`)}
+                      className="h-7 text-[11px] bg-cyan-600 hover:bg-cyan-500"
+                    >
+                      Open Live Classroom
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Activity Feed */}
             <div>
               <div className="flex items-center justify-between mb-3">

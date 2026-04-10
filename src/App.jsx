@@ -15,6 +15,32 @@ const LayoutWrapper = ({ children, currentPageName }) => Layout ?
   <Layout currentPageName={currentPageName}>{children}</Layout>
   : <>{children}</>;
 
+const getRoleRedirectPath = (currentPath, isAuthenticated, user) => {
+  if (!isAuthenticated || !user) {
+    return null;
+  }
+
+  const routeRoles = {
+    '/student-dashboard': ['student', 'admin'],
+    '/faculty-dashboard': ['faculty', 'admin']
+  };
+
+  const allowedRoles = routeRoles[currentPath];
+  if (!allowedRoles || allowedRoles.includes(user.role)) {
+    return null;
+  }
+
+  if (user.role === 'faculty') {
+    return '/faculty-dashboard';
+  }
+
+  if (user.role === 'student') {
+    return '/student-dashboard';
+  }
+
+  return '/analytics';
+};
+
 const AuthenticatedApp = () => {
   const { user, isAuthenticated, isLoadingAuth } = useAuth();
 
@@ -31,11 +57,17 @@ const AuthenticatedApp = () => {
   }
 
   // If user is not authenticated and not on login/register pages, show landing page
-  const currentPath = window.location.pathname;
+  const currentPath = globalThis.location.pathname;
   const publicPages = ['/', '/login', '/register', '/role-selection'];
   
   if (!isAuthenticated && !publicPages.includes(currentPath)) {
-    window.location.href = '/role-selection';
+    globalThis.location.href = '/role-selection';
+    return null;
+  }
+
+  const roleRedirectPath = getRoleRedirectPath(currentPath, isAuthenticated, user);
+  if (roleRedirectPath) {
+    globalThis.location.href = roleRedirectPath;
     return null;
   }
 

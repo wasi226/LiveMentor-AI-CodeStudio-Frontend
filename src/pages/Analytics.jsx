@@ -1,5 +1,6 @@
-import React, { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import React, { useMemo, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -13,10 +14,11 @@ import {
   Legend,
 } from 'chart.js';
 import { Bar, Line, Pie } from 'react-chartjs-2';
-import { TrendingUp, Target, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { TrendingUp, Target, AlertCircle, CheckCircle2, LogOut } from 'lucide-react';
 import StatCard from '@/components/ui-custom/StatCard';
 import ChartCard from '@/components/ui-custom/ChartCard';
 import TopBar from '@/components/ui-custom/TopBar';
+import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/AuthContext';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Filler, Tooltip, Legend);
@@ -297,7 +299,25 @@ const buildBaseOptions = () => ({
 });
 
 export default function Analytics() {
-  const { user, getAuthHeaders } = useAuth();
+  const { user, getAuthHeaders, logout } = useAuth();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [selectedUserId, setSelectedUserId] = useState('');
+  const [selectedClassroomId, setSelectedClassroomId] = useState('');
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState('');
+  const [purgeConfirmText, setPurgeConfirmText] = useState('');
+  const [adminActionError, setAdminActionError] = useState('');
+
+  const isAdmin = user?.role === 'admin';
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      navigate('/login');
+    } catch (error) {
+      console.error('Logout failed:', error);
+    }
+  };
 
   const { data: classrooms = [] } = useQuery({
     queryKey: ['analyticsClassrooms', user?.email],
@@ -376,6 +396,157 @@ export default function Analytics() {
         return [];
       }
     },
+  });
+
+  const { data: adminSummary } = useQuery({
+    queryKey: ['adminSummary'],
+    enabled: Boolean(isAdmin),
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE_URL}/api/admin/summary`, {
+        headers: getAuthHeaders()
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || 'Failed to load admin summary');
+      }
+
+      return payload.counts || {};
+    }
+  });
+
+  const { data: adminUsers = [] } = useQuery({
+    queryKey: ['adminUsers'],
+    enabled: Boolean(isAdmin),
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE_URL}/api/admin/users`, {
+        headers: getAuthHeaders()
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || 'Failed to load users');
+      }
+
+      return payload.users || [];
+    }
+  });
+
+  const refreshAdminData = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['adminSummary'] }),
+      queryClient.invalidateQueries({ queryKey: ['adminUsers'] }),
+      queryClient.invalidateQueries({ queryKey: ['analyticsClassrooms'] }),
+      queryClient.invalidateQueries({ queryKey: ['analyticsSubmissions'] }),
+      queryClient.invalidateQueries({ queryKey: ['analyticsAssignments'] })
+    ]);
+  };
+
+  const deleteUserMutation = useMutation({
+    mutationFn: async (userId) => {
+      const response = await fetch(`${API_BASE_URL}/api/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || 'Failed to delete user');
+      }
+
+      return payload;
+    },
+    onSuccess: async () => {
+      setSelectedUserId('');
+      setAdminActionError('');
+      await refreshAdminData();
+    },
+    onError: (error) => {
+      setAdminActionError(error.message || 'Failed to delete user');
+    }
+  });
+
+  const deleteClassroomMutation = useMutation({
+    mutationFn: async (classroomId) => {
+      const response = await fetch(`${API_BASE_URL}/api/admin/classrooms/${encodeURIComponent(classroomId)}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || 'Failed to delete classroom');
+      }
+
+      return payload;
+    },
+    onSuccess: async () => {
+      setSelectedClassroomId('');
+      setAdminActionError('');
+      await refreshAdminData();
+    },
+    onError: (error) => {
+      setAdminActionError(error.message || 'Failed to delete classroom');
+    }
+  });
+
+  const deleteAssignmentMutation = useMutation({
+    mutationFn: async (assignmentId) => {
+      const response = await fetch(`${API_BASE_URL}/api/admin/assignments/${encodeURIComponent(assignmentId)}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || 'Failed to delete assignment');
+      }
+
+      return payload;
+    },
+    onSuccess: async () => {
+      setSelectedAssignmentId('');
+      setAdminActionError('');
+      await refreshAdminData();
+    },
+    onError: (error) => {
+      setAdminActionError(error.message || 'Failed to delete assignment');
+    }
+  });
+
+  const purgeMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`${API_BASE_URL}/api/admin/purge`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          confirm: 'DELETE_ALL_ACTIVITY',
+          removeUsers: true,
+          removeClassrooms: true,
+          removeAssignments: true,
+          removeSubmissions: true,
+          removeChatMessages: true,
+          removeActivities: true,
+          removeInterventions: true,
+          keepAdminAccounts: true
+        })
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || 'Failed to purge data');
+      }
+
+      return payload;
+    },
+    onSuccess: async () => {
+      setPurgeConfirmText('');
+      setAdminActionError('');
+      await refreshAdminData();
+    },
+    onError: (error) => {
+      setAdminActionError(error.message || 'Failed to purge data');
+    }
   });
 
   const {
@@ -536,7 +707,22 @@ export default function Analytics() {
 
   return (
     <div className="min-h-screen bg-slate-950">
-      <TopBar user={user} title="Analytics" subtitle="Performance insights & trends" />
+      <TopBar
+        user={user}
+        title="Analytics"
+        subtitle="Performance insights & trends"
+        actions={(
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleLogout}
+            className="h-8 text-[12px] px-2 sm:px-3 gap-1.5 border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-600 hover:border-rose-500 hover:text-white transition-colors"
+          >
+            <LogOut style={{ width: 13, height: 13 }} />
+            <span className="hidden sm:inline">Logout</span>
+          </Button>
+        )}
+      />
 
       <main className="p-3 sm:p-4 lg:p-6 max-w-7xl mx-auto space-y-6">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -587,6 +773,133 @@ export default function Analytics() {
             </div>
           </ChartCard>
         </div>
+
+        {isAdmin && (
+          <div className="rounded-xl border border-rose-500/25 bg-rose-500/5 p-4 sm:p-5 space-y-4">
+            <div>
+              <h2 className="text-[15px] font-semibold text-rose-200">Admin Management</h2>
+              <p className="text-[12px] text-rose-100/70 mt-1">Remove users, classrooms, assignments, or reset all platform activity.</p>
+            </div>
+
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[11px] text-slate-500">Users</p>
+                <p className="text-[16px] font-semibold text-slate-100">{adminSummary?.users ?? 0}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[11px] text-slate-500">Classrooms</p>
+                <p className="text-[16px] font-semibold text-slate-100">{adminSummary?.classrooms ?? 0}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[11px] text-slate-500">Assignments</p>
+                <p className="text-[16px] font-semibold text-slate-100">{adminSummary?.assignments ?? 0}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <p className="text-[11px] text-slate-500">Submissions</p>
+                <p className="text-[16px] font-semibold text-slate-100">{adminSummary?.submissions ?? 0}</p>
+              </div>
+            </div>
+
+            <div className="grid lg:grid-cols-3 gap-3">
+              <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 space-y-2">
+                <p className="text-[12px] font-medium text-white">Remove User</p>
+                <select
+                  value={selectedUserId}
+                  onChange={(event) => setSelectedUserId(event.target.value)}
+                  className="w-full px-2.5 py-2 bg-slate-950 border border-slate-700 rounded-md text-[12px] text-slate-200"
+                >
+                  <option value="">Select faculty/student</option>
+                  {adminUsers
+                    .filter((account) => account.role !== 'admin')
+                    .map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.full_name || account.email} ({account.role})
+                      </option>
+                    ))}
+                </select>
+                <Button
+                  type="button"
+                  onClick={() => selectedUserId && deleteUserMutation.mutate(selectedUserId)}
+                  disabled={!selectedUserId || deleteUserMutation.isPending}
+                  className="w-full h-8 text-[12px] bg-rose-600 hover:bg-rose-500"
+                >
+                  {deleteUserMutation.isPending ? 'Removing...' : 'Remove User'}
+                </Button>
+              </div>
+
+              <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 space-y-2">
+                <p className="text-[12px] font-medium text-white">Remove Classroom</p>
+                <select
+                  value={selectedClassroomId}
+                  onChange={(event) => setSelectedClassroomId(event.target.value)}
+                  className="w-full px-2.5 py-2 bg-slate-950 border border-slate-700 rounded-md text-[12px] text-slate-200"
+                >
+                  <option value="">Select classroom</option>
+                  {classrooms.map((classroom) => (
+                    <option key={classroom.id} value={classroom.id}>
+                      {classroom.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  onClick={() => selectedClassroomId && deleteClassroomMutation.mutate(selectedClassroomId)}
+                  disabled={!selectedClassroomId || deleteClassroomMutation.isPending}
+                  className="w-full h-8 text-[12px] bg-rose-600 hover:bg-rose-500"
+                >
+                  {deleteClassroomMutation.isPending ? 'Removing...' : 'Remove Classroom'}
+                </Button>
+              </div>
+
+              <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 space-y-2">
+                <p className="text-[12px] font-medium text-white">Remove Assignment</p>
+                <select
+                  value={selectedAssignmentId}
+                  onChange={(event) => setSelectedAssignmentId(event.target.value)}
+                  className="w-full px-2.5 py-2 bg-slate-950 border border-slate-700 rounded-md text-[12px] text-slate-200"
+                >
+                  <option value="">Select assignment</option>
+                  {assignments.map((assignment) => (
+                    <option key={assignment.id || assignment._id} value={assignment.id || assignment._id}>
+                      {assignment.title}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  onClick={() => selectedAssignmentId && deleteAssignmentMutation.mutate(selectedAssignmentId)}
+                  disabled={!selectedAssignmentId || deleteAssignmentMutation.isPending}
+                  className="w-full h-8 text-[12px] bg-rose-600 hover:bg-rose-500"
+                >
+                  {deleteAssignmentMutation.isPending ? 'Removing...' : 'Remove Assignment'}
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-rose-500/30 bg-rose-900/20 p-3 space-y-2">
+              <p className="text-[12px] font-medium text-rose-200">Danger Zone: Full Platform Reset</p>
+              <p className="text-[11px] text-rose-100/70">This removes all faculty/student data, classrooms, assignments, submissions, chat, and activity. Admin accounts are kept.</p>
+              <input
+                value={purgeConfirmText}
+                onChange={(event) => setPurgeConfirmText(event.target.value)}
+                placeholder="Type DELETE_ALL_ACTIVITY"
+                className="w-full px-2.5 py-2 bg-slate-950 border border-slate-700 rounded-md text-[12px] text-slate-200"
+              />
+              <Button
+                type="button"
+                onClick={() => purgeMutation.mutate()}
+                disabled={purgeConfirmText !== 'DELETE_ALL_ACTIVITY' || purgeMutation.isPending}
+                className="w-full sm:w-auto h-8 text-[12px] bg-rose-700 hover:bg-rose-600"
+              >
+                {purgeMutation.isPending ? 'Resetting...' : 'Reset Entire Platform'}
+              </Button>
+            </div>
+
+            {adminActionError && (
+              <p className="text-[12px] text-rose-300">{adminActionError}</p>
+            )}
+          </div>
+        )}
       </main>
     </div>
   );
