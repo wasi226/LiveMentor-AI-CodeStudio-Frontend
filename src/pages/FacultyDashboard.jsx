@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
@@ -11,6 +11,7 @@ import { io } from 'socket.io-client';
 import StatCard from '@/components/ui-custom/StatCard';
 import ClassroomCard from '@/components/ui-custom/ClassroomCard';
 import TopBar from '@/components/ui-custom/TopBar';
+import CodeEditor from '@/components/classroom/CodeEditor';
 import { useAuth } from '@/lib/AuthContext';
 import { getAuthToken } from '@/lib/authStorage';
 import moment from 'moment';
@@ -211,6 +212,21 @@ function CodePreview({ code, language, maxLines = 40, heightClass = 'max-h-40' }
   );
 }
 
+const createTestCase = () => ({
+  id: `test_case_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+  input: '',
+  expectedOutput: ''
+});
+
+const normalizeTestCases = (testCases = []) => {
+  const items = Array.isArray(testCases) ? testCases : [];
+  return items.map((testCase) => ({
+    id: testCase.id || `test_case_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    input: testCase.input || '',
+    expectedOutput: testCase.expectedOutput || ''
+  }));
+};
+
 // eslint-disable-next-line sonarjs/cognitive-complexity
 export default function FacultyDashboard() {
   const dashboardParams = new URLSearchParams(globalThis.location.search);
@@ -224,6 +240,10 @@ export default function FacultyDashboard() {
   const [presenceMap, setPresenceMap] = useState({});
   const [inspectedStudentEmail, setInspectedStudentEmail] = useState('');
   const [isCodeWallOpen, setIsCodeWallOpen] = useState(false);
+  const [isLiveEditorOpen, setIsLiveEditorOpen] = useState(false);
+  const [liveEditorStudentEmail, setLiveEditorStudentEmail] = useState('');
+  const [liveEditorCode, setLiveEditorCode] = useState('');
+  const [liveEditorLanguage, setLiveEditorLanguage] = useState('javascript');
   const [activityFilters, setActivityFilters] = useState({
     onlyErrors: false,
     onlyActive: false,
@@ -239,6 +259,8 @@ export default function FacultyDashboard() {
     with_test_cases: false,
     test_cases: []
   });
+  const socketRef = useRef(null);
+  const facultyCodeSyncTimeout = useRef(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { user, logout, getAuthHeaders, handleUnauthorizedResponse } = useAuth();
@@ -270,6 +292,7 @@ export default function FacultyDashboard() {
     },
     enabled: !!user,
     retry: false,
+    refetchInterval: 10000,
   });
 
   const { data: allSubmissions = [] } = useQuery({
@@ -527,7 +550,19 @@ export default function FacultyDashboard() {
     setStudentActivity({});
     setPresenceMap({});
     setInspectedStudentEmail('');
+    setIsLiveEditorOpen(false);
+    setLiveEditorStudentEmail('');
+    setLiveEditorCode('');
+    setLiveEditorLanguage('javascript');
   }, [selectedClassroomId]);
+
+  useEffect(() => {
+    return () => {
+      if (facultyCodeSyncTimeout.current) {
+        clearTimeout(facultyCodeSyncTimeout.current);
+      }
+    };
+  }, []);
 
   const parseMetadata = (metadata) => {
     if (!metadata) {
@@ -550,6 +585,135 @@ export default function FacultyDashboard() {
       ...previous,
       [filterName]: !previous[filterName]
     }));
+  };
+
+  const resetAssignmentForm = () => {
+    setAssignmentForm({
+      title: '',
+      description: '',
+      due_date: '',
+      with_test_cases: false,
+      test_cases: []
+    });
+  };
+
+  const addAssignmentTestCase = () => {
+    createAssignmentMutation.reset();
+    setAssignmentForm((previous) => ({
+      ...previous,
+      test_cases: [...normalizeTestCases(previous.test_cases), createTestCase()]
+    }));
+  };
+
+  const updateAssignmentTestCaseField = (testCaseId, field, value) => {
+    createAssignmentMutation.reset();
+    setAssignmentForm((previous) => ({
+      ...previous,
+      test_cases: normalizeTestCases(previous.test_cases).map((testCase) => (
+        testCase.id === testCaseId
+          ? { ...testCase, [field]: value }
+          : testCase
+      ))
+    }));
+  };
+
+  const removeAssignmentTestCase = (testCaseId) => {
+    createAssignmentMutation.reset();
+    setAssignmentForm((previous) => ({
+      ...previous,
+      test_cases: normalizeTestCases(previous.test_cases).filter((testCase) => testCase.id !== testCaseId)
+    }));
+  };
+
+  const emitFacultyCodeChange = (targetStudentEmail, nextCode, nextLanguage) => {
+    const socket = socketRef.current;
+    const normalizedTarget = String(targetStudentEmail || '').trim().toLowerCase();
+
+    if (!normalizedTarget || !socket?.connected || !selectedClassroomId) {
+      return;
+    }
+
+    socket.emit('collaboration:event', {
+      eventType: 'code_change',
+      data: {
+        code: nextCode,
+        language: nextLanguage,
+        target_student_email: normalizedTarget,
+        source: 'faculty_live_editor',
+        timestamp: Date.now()
+      }
+    });
+  };
+
+  const scheduleFacultyCodeChange = (targetStudentEmail, nextCode, nextLanguage) => {
+    if (facultyCodeSyncTimeout.current) {
+      clearTimeout(facultyCodeSyncTimeout.current);
+    }
+
+    facultyCodeSyncTimeout.current = setTimeout(() => {
+      emitFacultyCodeChange(targetStudentEmail, nextCode, nextLanguage);
+    }, 220);
+  };
+
+  const applyLocalStudentCodeSnapshot = (studentEmail, nextCode, nextLanguage) => {
+    const normalizedTarget = String(studentEmail || '').trim().toLowerCase();
+
+    if (!normalizedTarget) {
+      return;
+    }
+
+    setStudentActivity((previous) => {
+      const current = previous[normalizedTarget] || {
+        totalEvents: 0,
+        problemsCount: 0,
+        lastCode: '',
+        lastCodeUpdatedAt: null,
+        lastLanguage: selectedClassroom?.language || 'javascript',
+        lastError: '',
+        lastOutput: '',
+        lastEventType: 'idle',
+        lastSeen: null
+      };
+
+      return {
+        ...previous,
+        [normalizedTarget]: {
+          ...current,
+          totalEvents: current.totalEvents + 1,
+          lastCode: nextCode,
+          lastLanguage: nextLanguage || current.lastLanguage,
+          lastCodeUpdatedAt: new Date().toISOString(),
+          lastEventType: 'code_change',
+          lastSeen: new Date().toISOString()
+        }
+      };
+    });
+  };
+
+  const handleOpenLiveEditor = (student) => {
+    const studentEmail = String(student?.email || '').trim().toLowerCase();
+    if (!studentEmail) {
+      return;
+    }
+
+    const nextLanguage = String(student?.lastLanguage || selectedClassroom?.language || 'javascript').toLowerCase();
+    setLiveEditorStudentEmail(studentEmail);
+    setLiveEditorCode(String(student?.lastCode || ''));
+    setLiveEditorLanguage(nextLanguage);
+    setInspectedStudentEmail(studentEmail);
+    setIsLiveEditorOpen(true);
+  };
+
+  const handleLiveEditorCodeChange = (nextCode) => {
+    setLiveEditorCode(nextCode);
+    applyLocalStudentCodeSnapshot(liveEditorStudentEmail, nextCode, liveEditorLanguage);
+    scheduleFacultyCodeChange(liveEditorStudentEmail, nextCode, liveEditorLanguage);
+  };
+
+  const handleLiveEditorLanguageChange = (nextLanguage) => {
+    setLiveEditorLanguage(nextLanguage);
+    applyLocalStudentCodeSnapshot(liveEditorStudentEmail, liveEditorCode, nextLanguage);
+    scheduleFacultyCodeChange(liveEditorStudentEmail, liveEditorCode, nextLanguage);
   };
 
   const handleSubmissionSocketEvent = (event) => {
@@ -586,6 +750,14 @@ export default function FacultyDashboard() {
     }
   };
 
+  const handleOpenClassroomIde = () => {
+    if (!selectedClassroomId) {
+      return;
+    }
+
+    navigate(`/classroom?id=${encodeURIComponent(selectedClassroomId)}`);
+  };
+
   const handleCloseIntervention = async () => {
     if (!selectedClassroomId || !activeInterventionRoom?.room_id) {
       return;
@@ -620,6 +792,7 @@ export default function FacultyDashboard() {
 
     if (!token || !user?.email || !selectedClassroomId) {
       setIsRealtimeConnected(false);
+      socketRef.current = null;
       return undefined;
     }
 
@@ -628,6 +801,7 @@ export default function FacultyDashboard() {
       auth: { token },
       transports: ['websocket', 'polling']
     });
+    socketRef.current = socket;
 
     socket.on('connect', () => {
       setIsRealtimeConnected(true);
@@ -661,14 +835,24 @@ export default function FacultyDashboard() {
 
       const metadata = parseMetadata(event.metadata);
       const senderEmail = event.sender_email;
+      const isPersonalCodeChange = event.type === 'personal_code_change';
+      const targetStudentEmail = typeof metadata?.target_student_email === 'string'
+        ? metadata.target_student_email.trim().toLowerCase()
+        : '';
+      const trackedEmail = (event.type === 'code_change' && targetStudentEmail)
+        ? targetStudentEmail
+        : senderEmail;
+      const effectiveEventType = isPersonalCodeChange ? 'code_change' : (event.type || 'activity');
+      const liveEditorCode = typeof metadata.code === 'string' ? metadata.code : '';
+      const liveEditorLanguage = metadata.language || selectedClassroom?.language || 'javascript';
 
       setLiveFeed((previous) => {
         const next = [
           {
             id: event.id || `evt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            sender_email: senderEmail,
-            sender_name: event.sender_name || senderEmail.split('@')[0],
-            type: event.type || 'activity',
+            sender_email: trackedEmail,
+            sender_name: event.sender_name || trackedEmail.split('@')[0],
+            type: effectiveEventType,
             metadata,
             created_date: event.created_date || new Date().toISOString()
           },
@@ -679,7 +863,7 @@ export default function FacultyDashboard() {
       });
 
       setStudentActivity((previous) => {
-        const current = previous[senderEmail] || {
+        const current = previous[trackedEmail] || {
           totalEvents: 0,
           problemsCount: 0,
           lastCode: '',
@@ -694,13 +878,13 @@ export default function FacultyDashboard() {
         const nextState = {
           ...current,
           totalEvents: current.totalEvents + 1,
-          lastEventType: event.type || 'activity',
+          lastEventType: effectiveEventType,
           lastSeen: event.created_date || new Date().toISOString()
         };
 
-        if (event.type === 'code_change') {
-          nextState.lastCode = typeof metadata.code === 'string' ? metadata.code : current.lastCode;
-          nextState.lastLanguage = metadata.language || current.lastLanguage;
+        if (event.type === 'code_change' || isPersonalCodeChange) {
+          nextState.lastCode = liveEditorCode || current.lastCode;
+          nextState.lastLanguage = liveEditorLanguage;
           nextState.lastCodeUpdatedAt = event.created_date || new Date().toISOString();
         }
 
@@ -717,7 +901,7 @@ export default function FacultyDashboard() {
 
         return {
           ...previous,
-          [senderEmail]: nextState
+          [trackedEmail]: nextState
         };
       });
     });
@@ -728,6 +912,7 @@ export default function FacultyDashboard() {
     return () => {
       socket.removeAllListeners();
       socket.disconnect();
+      socketRef.current = null;
       setIsRealtimeConnected(false);
     };
   }, [selectedClassroomId, user?.email, selectedClassroom?.language]);
@@ -739,7 +924,40 @@ export default function FacultyDashboard() {
     : 0;
   const hasClassrooms = classrooms.length > 0;
   const classroomLabel = classrooms.length === 1 ? 'classroom' : 'classrooms';
-  const selectedClassroomStudents = selectedClassroom?.student_details || [];
+  const selectedClassroomStudents = useMemo(() => {
+    if (!selectedClassroom) {
+      return [];
+    }
+
+    const details = Array.isArray(selectedClassroom.student_details)
+      ? selectedClassroom.student_details
+      : [];
+    const detailMap = new Map(
+      details
+        .filter((student) => student?.email)
+        .map((student) => [String(student.email).toLowerCase(), student])
+    );
+
+    const emails = Array.isArray(selectedClassroom.student_emails)
+      ? selectedClassroom.student_emails
+      : [];
+
+    // Ensure students still appear even when student_details is temporarily stale.
+    emails.forEach((email) => {
+      const normalized = String(email || '').trim().toLowerCase();
+      if (!normalized || detailMap.has(normalized)) {
+        return;
+      }
+
+      detailMap.set(normalized, {
+        email: normalized,
+        full_name: normalized.split('@')[0],
+        role: 'student'
+      });
+    });
+
+    return Array.from(detailMap.values());
+  }, [selectedClassroom]);
 
   const monitoredStudents = useMemo(() => {
     let students = selectedClassroomStudents.map((student) => {
@@ -794,9 +1012,13 @@ export default function FacultyDashboard() {
   }, [selectedClassroomStudents, studentActivity, presenceMap, selectedClassroom?.language, activityFilters]);
 
   const inspectedStudent = monitoredStudents.find((student) => student.email === inspectedStudentEmail) || monitoredStudents[0] || null;
-  const studentsWithSnapshots = monitoredStudents.filter((student) => {
-    if (!student.isOnline || !student.lastCode) {
-      return false;
+  const studentsForLiveWall = monitoredStudents.filter((student) => {
+    if (student.isOnline) {
+      return true;
+    }
+
+    if (student.totalEvents > 0 || Boolean(student.lastCode)) {
+      return true;
     }
 
     const codeUpdatedAt = student.lastCodeUpdatedAt ? new Date(student.lastCodeUpdatedAt).getTime() : 0;
@@ -941,13 +1163,7 @@ export default function FacultyDashboard() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
       setAssignmentDialogOpen(false);
-      setAssignmentForm({
-        title: '',
-        description: '',
-        due_date: '',
-        with_test_cases: false,
-        test_cases: []
-      });
+      resetAssignmentForm();
     },
   });
 
@@ -968,23 +1184,6 @@ export default function FacultyDashboard() {
 
       return nextForm;
     });
-  };
-
-  const updateAssignmentTestCaseField = (index, field, value) => {
-    createAssignmentMutation.reset();
-    setAssignmentForm((prev) => ({
-      ...prev,
-      test_cases: prev.test_cases.map((item, itemIndex) => {
-        if (itemIndex !== index) {
-          return item;
-        }
-
-        return {
-          ...item,
-          [field]: value
-        };
-      })
-    }));
   };
 
   const copyCode = (code) => {
@@ -1199,13 +1398,7 @@ export default function FacultyDashboard() {
                       setAssignmentDialogOpen(open);
                       if (!open) {
                         createAssignmentMutation.reset();
-                        setAssignmentForm({
-                          title: '',
-                          description: '',
-                          due_date: '',
-                          with_test_cases: false,
-                          test_cases: []
-                        });
+                        resetAssignmentForm();
                       }
                     }}>
                       <DialogTrigger asChild>
@@ -1257,7 +1450,7 @@ export default function FacultyDashboard() {
                               }}
                               className="w-4 h-4 rounded border-slate-700 bg-slate-900"
                             />
-                            With test cases
+                            <span>{'With test cases'}</span>
                           </label>
 
                           {assignmentForm.with_test_cases && (
@@ -1268,25 +1461,19 @@ export default function FacultyDashboard() {
                                   type="button"
                                   variant="outline"
                                   className="h-6 px-2 text-[10px] border-slate-700 text-slate-300 hover:bg-slate-800"
-                                  onClick={() => {
-                                    createAssignmentMutation.reset();
-                                    setAssignmentForm((prev) => ({
-                                      ...prev,
-                                      test_cases: [...prev.test_cases, { input: '', expectedOutput: '' }]
-                                    }));
-                                  }}
+                                  onClick={addAssignmentTestCase}
                                 >
                                   Add Case
                                 </Button>
                               </div>
 
-                              {assignmentForm.test_cases.map((testCase, index) => (
-                                <div key={`test_case_${index}`} className="space-y-1.5 rounded border border-slate-800/60 p-2">
+                              {normalizeTestCases(assignmentForm.test_cases).map((testCase, index) => (
+                                <div key={testCase.id} className="space-y-1.5 rounded border border-slate-800/60 p-2">
                                   <input
                                     placeholder={`Input #${index + 1} (optional)`}
                                     value={testCase.input}
                                     onChange={(e) => {
-                                      updateAssignmentTestCaseField(index, 'input', e.target.value);
+                                      updateAssignmentTestCaseField(testCase.id, 'input', e.target.value);
                                     }}
                                     className="w-full px-2 py-2 bg-slate-900 border border-slate-800 rounded text-white text-[12px] placeholder:text-slate-600 outline-none focus:border-indigo-500/50 transition-colors"
                                   />
@@ -1294,7 +1481,7 @@ export default function FacultyDashboard() {
                                     placeholder={`Expected output #${index + 1} *`}
                                     value={testCase.expectedOutput}
                                     onChange={(e) => {
-                                      updateAssignmentTestCaseField(index, 'expectedOutput', e.target.value);
+                                      updateAssignmentTestCaseField(testCase.id, 'expectedOutput', e.target.value);
                                     }}
                                     className="w-full px-2 py-2 bg-slate-900 border border-slate-800 rounded text-white text-[12px] placeholder:text-slate-600 outline-none focus:border-indigo-500/50 transition-colors"
                                   />
@@ -1304,13 +1491,7 @@ export default function FacultyDashboard() {
                                         type="button"
                                         variant="ghost"
                                         className="h-6 px-2 text-[10px] text-rose-300 hover:text-rose-200 hover:bg-rose-500/10"
-                                        onClick={() => {
-                                          createAssignmentMutation.reset();
-                                          setAssignmentForm((prev) => ({
-                                            ...prev,
-                                            test_cases: prev.test_cases.filter((_, itemIndex) => itemIndex !== index)
-                                          }));
-                                        }}
+                                        onClick={() => removeAssignmentTestCase(testCase.id)}
                                       >
                                         Remove
                                       </Button>
@@ -1347,6 +1528,8 @@ export default function FacultyDashboard() {
                           const submissions = isExpanded ? getSubmissionsForAssignment(assignmentId) : [];
                           const hasAssignmentTestCases = Array.isArray(assignment.test_cases) && assignment.test_cases.length > 0;
                           const isTestCaseGraded = assignment.auto_grade === true || assignment?.metadata?.auto_grade === true || hasAssignmentTestCases;
+                          const submissionLabel = submissionCount === 1 ? 'submission' : 'submissions';
+                          const showAssignButton = !assignment.is_assigned;
                           
                           return (
                             <div key={assignmentId} className="rounded-lg border border-slate-800/60 bg-slate-900/40 overflow-hidden">
@@ -1370,12 +1553,12 @@ export default function FacultyDashboard() {
                                       </span>
                                       {assignment.is_assigned && (
                                         <span className={`text-[9px] px-2 py-0.5 rounded font-semibold ${submissionCount > 0 ? 'text-blue-300 bg-blue-500/15 border border-blue-500/20' : 'text-slate-500 bg-slate-800/30'}`}>
-                                          📤 {submissionCount} submission{submissionCount !== 1 ? 's' : ''}
+                                          📤 {submissionCount} {submissionLabel}
                                         </span>
                                       )}
                                     </div>
                                   </div>
-                                  {!assignment.is_assigned ? (
+                                  {showAssignButton ? (
                                     <Button
                                       size="sm"
                                       onClick={(e) => {
@@ -1406,7 +1589,13 @@ export default function FacultyDashboard() {
                               {isExpanded && assignment.is_assigned && submissionCount > 0 && (
                                 <div className="border-t border-slate-800/40 bg-slate-950/30 p-2 space-y-1.5 max-h-48 overflow-auto">
                                   <p className="text-[10px] text-slate-400 px-1 py-1">Who Submitted:</p>
-                                  {submissions.map((submission) => (
+                                  {submissions.map((submission) => {
+                                    const score = submission.score || 0;
+                                    const scoreClass = score >= 70
+                                      ? 'text-green-300 bg-green-500/15'
+                                      : 'text-yellow-300 bg-yellow-500/15';
+
+                                    return (
                                     <button
                                       key={submission.id || submission._id}
                                       onClick={() => setSelectedSubmission(submission)}
@@ -1417,12 +1606,13 @@ export default function FacultyDashboard() {
                                           <p className="text-[10px] font-semibold text-slate-200 truncate">{submission.student_email}</p>
                                           <p className="text-[9px] text-slate-500">{submission.language} · {moment(submission.submitted_at || submission.created_at || submission.created_date).fromNow()}</p>
                                         </div>
-                                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 ${(submission.score || 0) >= 70 ? 'text-green-300 bg-green-500/15' : (submission.score || 0) >= 50 ? 'text-yellow-300 bg-yellow-500/15' : 'text-slate-400 bg-slate-700/20'}`}>
-                                          {submission.score ?? '—'}%
+                                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 ${scoreClass}`}>
+                                          {score}%
                                         </span>
                                       </div>
                                     </button>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                               )}
 
@@ -1646,16 +1836,27 @@ export default function FacultyDashboard() {
                 {liveStudentsList}
 
                 {selectedClassroom && (
+                  <>
                   <Dialog open={isCodeWallOpen} onOpenChange={setIsCodeWallOpen}>
-                    <DialogTrigger asChild>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <Button
                         size="sm"
                         variant="outline"
-                        className="w-full h-8 text-[11px] border-indigo-500/30 bg-indigo-500/10 text-indigo-100 hover:bg-indigo-500/20"
+                        onClick={handleOpenClassroomIde}
+                        className="h-8 text-[11px] border-emerald-500/30 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/20"
                       >
-                        <LayoutGrid style={{ width: 12, height: 12 }} /> Open Live Code Wall
+                        <FileCode style={{ width: 12, height: 12 }} /> Open Classroom IDE
                       </Button>
-                    </DialogTrigger>
+                      <DialogTrigger asChild>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-[11px] border-indigo-500/30 bg-indigo-500/10 text-indigo-100 hover:bg-indigo-500/20"
+                        >
+                          <LayoutGrid style={{ width: 12, height: 12 }} /> Open Live Code Wall
+                        </Button>
+                      </DialogTrigger>
+                    </div>
                     <DialogContent className="bg-[#0d1117] border-slate-800 text-white max-w-7xl w-[96vw] max-h-[92vh] overflow-hidden p-0">
                       <div className="flex h-[92vh] flex-col min-h-0">
                         <div className="px-5 pt-5 pb-3 border-b border-slate-800/70 flex-shrink-0">
@@ -1668,9 +1869,9 @@ export default function FacultyDashboard() {
                         </div>
 
                         <div className="flex-1 overflow-y-auto overflow-x-hidden px-5 py-4 min-h-0">
-                        {studentsWithSnapshots.length > 0 ? (
+                        {studentsForLiveWall.length > 0 ? (
                           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 items-start">
-                            {studentsWithSnapshots.map((student) => (
+                            {studentsForLiveWall.map((student) => (
                               <div key={`wall_${student.email}`} className="rounded-xl border border-slate-800/70 bg-slate-950/50 p-3 space-y-2.5">
                                 <div className="flex items-start justify-between gap-2">
                                   <div className="min-w-0">
@@ -1723,6 +1924,17 @@ export default function FacultyDashboard() {
                                   </Button>
                                   <Button
                                     size="sm"
+                                    onClick={() => {
+                                      handleOpenLiveEditor(student);
+                                      setIsCodeWallOpen(false);
+                                    }}
+                                    variant="outline"
+                                    className="h-7 text-[10px] px-2 border-cyan-500/30 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20"
+                                  >
+                                    <Code2 style={{ width: 10, height: 10 }} /> Live Edit
+                                  </Button>
+                                  <Button
+                                    size="sm"
                                     onClick={() => handleIntervene(student.email)}
                                     className="h-7 text-[10px] px-2 bg-indigo-600 hover:bg-indigo-500"
                                   >
@@ -1734,14 +1946,47 @@ export default function FacultyDashboard() {
                           </div>
                         ) : (
                           <div className="rounded-lg border border-slate-800/70 bg-slate-900/35 px-3 py-6 text-center">
-                            <p className="text-[12px] text-slate-500">No live coding activity right now.</p>
-                            <p className="text-[10px] text-slate-600 mt-1">Cards appear only for students who are online and actively writing code.</p>
+                            <p className="text-[12px] text-slate-500">No students in this classroom yet.</p>
+                            <p className="text-[10px] text-slate-600 mt-1">Students appear here as soon as they join, go online, or start coding.</p>
                           </div>
                         )}
                         </div>
                       </div>
                     </DialogContent>
                   </Dialog>
+
+                  <Dialog open={isLiveEditorOpen} onOpenChange={setIsLiveEditorOpen}>
+                    <DialogContent className="bg-[#0d1117] border-slate-800 text-white max-w-6xl w-[96vw] max-h-[92vh] overflow-hidden p-0">
+                      <div className="flex h-[90vh] flex-col min-h-0">
+                        <div className="px-5 pt-5 pb-3 border-b border-slate-800/70 flex-shrink-0">
+                          <DialogHeader>
+                            <DialogTitle className="text-[15px]">Live Editor · {liveEditorStudentEmail || 'Student'}</DialogTitle>
+                            <DialogDescription className="text-slate-500 text-[12px]">
+                              Faculty edits are streamed in real time to this student only.
+                            </DialogDescription>
+                          </DialogHeader>
+                        </div>
+                        <div className="flex-1 min-h-0 p-4">
+                          <CodeEditor
+                            language={liveEditorLanguage}
+                            onLanguageChange={handleLiveEditorLanguageChange}
+                            code={liveEditorCode}
+                            onCodeChange={handleLiveEditorCodeChange}
+                            onCursorChange={() => null}
+                            onRun={() => null}
+                            onSubmit={() => null}
+                            isRunning={false}
+                            readOnly={false}
+                            ownerLabel={`Editing student: ${liveEditorStudentEmail || 'unknown'}`}
+                            errorLineNumbers={[]}
+                            submitDisabled
+                            submitLabel="Disabled"
+                          />
+                        </div>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                  </>
                 )}
               </div>
             </div>

@@ -18,6 +18,7 @@ const SOCKET_IO_PATH = import.meta.env.VITE_SOCKET_IO_PATH || '/socket.io';
 // Real-time collaboration events
 export const COLLABORATION_EVENTS = {
   CODE_CHANGE: 'code_change',
+  PERSONAL_CODE_CHANGE: 'personal_code_change',
   CURSOR_MOVE: 'cursor_move', 
   USER_TYPING: 'user_typing',
   CHAT_MESSAGE: 'chat_message',

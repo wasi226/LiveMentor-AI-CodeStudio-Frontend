@@ -30,7 +30,7 @@ export const DEFAULT_CODE_SNIPPETS = {
   rust:       `// Welcome to CodeClass.ai\nfn main() {\n    // Write your solution here\n    println!("Hello, world!");\n}`,
 };
 
-export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning, readOnly = false, errorLineNumbers = [], submitDisabled = false, submitLabel = 'Submit' }) {
+export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning, readOnly = false, ownerLabel = '', errorLineNumbers = [], submitDisabled = false, submitLabel = 'Submit' }) {
   const [copied, setCopied] = useState(false);
   const [showVisualizer, setShowVisualizer] = useState(false);
   const textareaRef = useRef(null);
@@ -110,6 +110,11 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
           <span className="text-[11px] text-slate-500 font-mono ml-0.5 truncate">
             main.{currentLang.ext}
           </span>
+          {ownerLabel ? (
+            <span className="text-[10px] text-slate-300 bg-slate-800/80 border border-slate-700/70 rounded-full px-2 py-0.5 truncate max-w-[45vw] sm:max-w-[24rem]">
+              {ownerLabel}
+            </span>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-1">

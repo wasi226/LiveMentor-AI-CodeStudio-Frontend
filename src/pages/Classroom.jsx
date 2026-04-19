@@ -18,6 +18,7 @@ import { useAuth } from '@/lib/AuthContext';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 const CHAT_CACHE_KEY_PREFIX = 'lm_chat_cache_v1';
 const CHAT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const CODE_CACHE_KEY_PREFIX = 'lm_code_cache_v1';
 const LANGUAGE_EXTENSIONS = {
   javascript: 'js',
   python: 'py',
@@ -65,6 +66,36 @@ const getChatCacheKey = (classroomId, userEmail) => {
   }
 
   return `${CHAT_CACHE_KEY_PREFIX}:${classroomId}:${userEmail}`;
+};
+
+const getCodeCacheKey = (classroomId, userEmail, scope = 'personal') => {
+  if (!classroomId || !userEmail) {
+    return null;
+  }
+
+  return `${CODE_CACHE_KEY_PREFIX}:${classroomId}:${userEmail}:${scope}`;
+};
+
+const getDisplayNameFromEmail = (email, classroom) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!normalizedEmail) {
+    return 'Unknown user';
+  }
+
+  if (String(classroom?.faculty_email || '').trim().toLowerCase() === normalizedEmail) {
+    return 'Faculty';
+  }
+
+  const studentDetails = Array.isArray(classroom?.student_details) ? classroom.student_details : [];
+  const matchedStudent = studentDetails.find((student) => (
+    String(student?.email || '').trim().toLowerCase() === normalizedEmail
+  ));
+
+  if (matchedStudent?.full_name) {
+    return matchedStudent.full_name;
+  }
+
+  return normalizedEmail.split('@')[0] || normalizedEmail;
 };
 
 const getMessageTimestamp = (message) => {
@@ -192,6 +223,7 @@ export default function Classroom() {
   const classroomId = urlParams.get('id');
   const assignmentIdFromUrl = urlParams.get('assignment');
   const interventionRoomId = urlParams.get('room');
+  const focusStudentFromUrl = String(urlParams.get('focusStudent') || '').trim().toLowerCase();
   const returnTo = urlParams.get('returnTo');
   const { user, getAuthHeaders } = useAuth();
   const queryClient = useQueryClient();
@@ -219,18 +251,29 @@ export default function Classroom() {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
+  const [facultyEditNotice, setFacultyEditNotice] = useState({ active: false, editorName: 'Faculty', lastEditedAt: 0 });
+  const [sharedTeachingNotice, setSharedTeachingNotice] = useState({ active: false, teacherName: 'Faculty' });
+  const [facultyEditNow, setFacultyEditNow] = useState(() => Date.now());
+  const [codeViewMode, setCodeViewMode] = useState(isFacultyOrAdmin ? 'shared' : 'personal');
   const [isMobileLayout, setIsMobileLayout] = useState(() => isMobileViewport());
   const errorLineNumbers = useMemo(() => extractErrorLineNumbers(error), [error]);
   
   const codeChangeTimeout = useRef(null);
   const cursorSyncTimeout = useRef(null);
+  const codeStateSaveTimeout = useRef(null);
   const lastCodeSync = useRef('');
   const pendingCodeSync = useRef('');
   const latestCodeRef = useRef('');
   const latestLanguageRef = useRef('javascript');
+  const latestSharedClassroomSnapshot = useRef({ code: '', language: '' });
   const autoSaveInitialized = useRef(false);
   const previousMobileState = useRef(isMobileLayout);
+  const loadedServerState = useRef(false);
+  const facultyEditNoticeTimeout = useRef(null);
+  const sharedTeachingNoticeTimeout = useRef(null);
   const chatCacheKey = useMemo(() => getChatCacheKey(classroomId, user?.email), [classroomId, user?.email]);
+  const codeCacheKey = useMemo(() => getCodeCacheKey(classroomId, user?.email, codeViewMode), [classroomId, user?.email, codeViewMode]);
+  const codeRestoredFromCache = useRef(false);
   
   // Real-time collaboration
   const { 
@@ -302,7 +345,10 @@ export default function Classroom() {
   });
 
   const canBroadcastCodeChanges = useMemo(() => {
-    if (!user?.email) {
+    const userEmail = String(user?.email || '').trim().toLowerCase();
+    const classroomFacultyEmail = String(classroom?.faculty_email || '').trim().toLowerCase();
+
+    if (!userEmail) {
       return false;
     }
 
@@ -310,14 +356,16 @@ export default function Classroom() {
       return true;
     }
 
-    return Boolean(classroom?.faculty_email && classroom.faculty_email === user.email);
+    return Boolean(classroomFacultyEmail && classroomFacultyEmail === userEmail);
   }, [classroom?.faculty_email, user?.email, user?.role]);
 
   const canEditCode = useMemo(() => {
-    return Boolean(user?.email && classroomId);
-  }, [classroomId, user?.email]);
+    return canBroadcastCodeChanges || codeViewMode === 'personal';
+  }, [canBroadcastCodeChanges, codeViewMode]);
 
   const effectiveAssignmentId = assignmentIdFromUrl || classroomAssignmentId;
+
+  const codeStateScope = codeViewMode;
 
   const hasSubmittedCurrentAssignment = useMemo(() => {
     if (!effectiveAssignmentId) {
@@ -351,6 +399,26 @@ export default function Classroom() {
       }
     },
     enabled: Boolean(classroomId && user?.email),
+  });
+
+  const { data: serverCodeState = null } = useQuery({
+    queryKey: ['classroomCodeState', classroomId, user?.email, codeStateScope],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE_URL}/api/classrooms/${classroomId}/code-state?scope=${encodeURIComponent(codeStateScope)}`,
+        { headers: getAuthHeaders() }
+      );
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      return payload?.state || null;
+    },
+    enabled: Boolean(classroomId && user?.email),
+    staleTime: 15_000,
+    refetchOnWindowFocus: false
   });
 
   useEffect(() => {
@@ -442,12 +510,140 @@ export default function Classroom() {
   }, [code, language]);
 
   useEffect(() => {
+    codeRestoredFromCache.current = false;
+    loadedServerState.current = false;
+  }, [codeCacheKey]);
+
+  useEffect(() => {
+    if (!codeCacheKey || codeRestoredFromCache.current) {
+      return;
+    }
+
+    try {
+      const rawCache = globalThis.localStorage?.getItem(codeCacheKey);
+      if (!rawCache) {
+        codeRestoredFromCache.current = true;
+        return;
+      }
+
+      const parsedCache = JSON.parse(rawCache);
+      const cachedCode = typeof parsedCache?.code === 'string' ? parsedCache.code : '';
+      const cachedLanguage = typeof parsedCache?.language === 'string' ? parsedCache.language : null;
+
+      if (cachedCode) {
+        setCode(cachedCode);
+        pendingCodeSync.current = cachedCode;
+        lastCodeSync.current = cachedCode;
+      }
+
+      if (cachedLanguage) {
+        setLanguage(cachedLanguage);
+      }
+    } catch (cacheError) {
+      console.warn('Failed to restore cached classroom code:', cacheError);
+    } finally {
+      codeRestoredFromCache.current = true;
+    }
+  }, [codeCacheKey]);
+
+  useEffect(() => {
+    if (!codeCacheKey || !codeRestoredFromCache.current) {
+      return;
+    }
+
+    try {
+      globalThis.localStorage?.setItem(codeCacheKey, JSON.stringify({
+        cachedAt: new Date().toISOString(),
+        code,
+        language
+      }));
+    } catch (cacheError) {
+      console.warn('Failed to persist classroom code cache:', cacheError);
+    }
+  }, [codeCacheKey, code, language]);
+
+  useEffect(() => {
+    if (loadedServerState.current || !serverCodeState) {
+      return;
+    }
+
+    const serverCode = typeof serverCodeState?.code === 'string' ? serverCodeState.code : '';
+    const serverLanguage = typeof serverCodeState?.language === 'string' ? serverCodeState.language : null;
+
+    if (serverCode || serverLanguage) {
+      if (serverCode) {
+        setCode(serverCode);
+        pendingCodeSync.current = serverCode;
+        lastCodeSync.current = serverCode;
+      }
+
+      if (serverLanguage) {
+        setLanguage(serverLanguage);
+      }
+    }
+
+    loadedServerState.current = true;
+  }, [serverCodeState]);
+
+  useEffect(() => {
+    if (!classroomId || !user?.email || !codeRestoredFromCache.current || (!canBroadcastCodeChanges && codeViewMode === 'shared')) {
+      return;
+    }
+
+    if (codeStateSaveTimeout.current) {
+      clearTimeout(codeStateSaveTimeout.current);
+    }
+
+    codeStateSaveTimeout.current = setTimeout(async () => {
+      try {
+        await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/code-state`, {
+          method: 'PUT',
+          headers: {
+            ...getAuthHeaders(),
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            code,
+            language,
+            scope: codeStateScope
+          })
+        });
+      } catch (saveError) {
+        console.warn('Failed to save classroom code state to backend:', saveError);
+      }
+    }, 1200);
+
+    return () => {
+      if (codeStateSaveTimeout.current) {
+        clearTimeout(codeStateSaveTimeout.current);
+      }
+    };
+  }, [classroomId, user?.email, code, language, codeStateScope, getAuthHeaders, canBroadcastCodeChanges, codeViewMode]);
+
+  useEffect(() => {
+    setCodeViewMode(isFacultyOrAdmin ? 'shared' : 'personal');
+  }, [classroomId, isFacultyOrAdmin, user?.email]);
+
+  useEffect(() => {
+    latestSharedClassroomSnapshot.current = { code: '', language: '' };
+  }, [classroomId]);
+
+  useEffect(() => {
     return () => {
       if (codeChangeTimeout.current) {
         clearTimeout(codeChangeTimeout.current);
       }
       if (cursorSyncTimeout.current) {
         clearTimeout(cursorSyncTimeout.current);
+      }
+      if (codeStateSaveTimeout.current) {
+        clearTimeout(codeStateSaveTimeout.current);
+      }
+      if (facultyEditNoticeTimeout.current) {
+        clearTimeout(facultyEditNoticeTimeout.current);
+      }
+      if (sharedTeachingNoticeTimeout.current) {
+        clearTimeout(sharedTeachingNoticeTimeout.current);
       }
     };
   }, []);
@@ -463,8 +659,18 @@ export default function Classroom() {
         return;
       }
 
+      // For faculty/admin, only resolve intervention context when a specific student was requested.
+      // This avoids auto-jumping into stale rooms when opening the generic classroom IDE.
+      if (isFacultyOrAdmin && !focusStudentFromUrl) {
+        return;
+      }
+
       try {
-        const response = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/interventions/active`, {
+        const querySuffix = focusStudentFromUrl
+          ? `?student_email=${encodeURIComponent(focusStudentFromUrl)}`
+          : '';
+
+        const response = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/interventions/active${querySuffix}`, {
           headers: getAuthHeaders()
         });
 
@@ -482,7 +688,7 @@ export default function Classroom() {
     };
 
     void resolveActiveInterventionRoom();
-  }, [classroomId, user?.email, interventionRoomId, getAuthHeaders]);
+  }, [classroomId, user?.email, interventionRoomId, getAuthHeaders, isFacultyOrAdmin, focusStudentFromUrl]);
 
   const handleExitRoom = async () => {
     if (roomType !== 'intervention') {
@@ -504,6 +710,43 @@ export default function Classroom() {
     }
 
     navigate(interventionReturnTarget, { replace: true });
+  };
+
+  const handleOpenStudentCode = async (participant) => {
+    const studentEmail = String(participant?.email || '').trim().toLowerCase();
+    if (!classroomId || !studentEmail) {
+      return;
+    }
+
+    if (!canBroadcastCodeChanges) {
+      setError('Only faculty can open private student code sessions.');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/interventions`, {
+        method: 'POST',
+        headers: {
+          ...getAuthHeaders(),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ student_email: studentEmail })
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload?.room?.room_id) {
+        throw new Error(payload?.message || payload?.error || 'Failed to open student intervention room.');
+      }
+
+      const sharedClassroomPath = `/classroom?id=${encodeURIComponent(classroomId)}`;
+      navigate(
+        `/classroom?id=${encodeURIComponent(classroomId)}&room=${encodeURIComponent(payload.room.room_id)}&focusStudent=${encodeURIComponent(studentEmail)}&returnTo=${encodeURIComponent(sharedClassroomPath)}`,
+        { replace: true }
+      );
+    } catch (openError) {
+      console.error('Failed to open student code session:', openError);
+      setError(openError?.message || 'Unable to open student code session.');
+    }
   };
 
   useEffect(() => {
@@ -564,6 +807,95 @@ export default function Classroom() {
     return exists ? previousMessages : [...previousMessages, message];
   };
 
+  const showFacultyEditNotice = (senderName) => {
+    if (canBroadcastCodeChanges) {
+      return;
+    }
+
+    const editorName = (senderName || 'Faculty').toString();
+    setFacultyEditNotice({ active: true, editorName, lastEditedAt: Date.now() });
+
+    if (facultyEditNoticeTimeout.current) {
+      clearTimeout(facultyEditNoticeTimeout.current);
+    }
+
+    facultyEditNoticeTimeout.current = setTimeout(() => {
+      setFacultyEditNotice((previous) => ({ ...previous, active: false }));
+    }, 5500);
+  };
+
+  const showSharedTeachingNotice = (senderName) => {
+    if (canBroadcastCodeChanges) {
+      return;
+    }
+
+    const teacherName = (senderName || 'Faculty').toString();
+    setSharedTeachingNotice({ active: true, teacherName });
+
+    if (sharedTeachingNoticeTimeout.current) {
+      clearTimeout(sharedTeachingNoticeTimeout.current);
+    }
+
+    sharedTeachingNoticeTimeout.current = setTimeout(() => {
+      setSharedTeachingNotice((previous) => ({ ...previous, active: false }));
+    }, 6500);
+  };
+
+  const handleCodeViewModeChange = (nextMode) => {
+    if (nextMode === 'shared' || nextMode === 'personal') {
+      setCodeViewMode(nextMode);
+
+      if (nextMode === 'shared' && !canBroadcastCodeChanges) {
+        const snapshotCode = String(latestSharedClassroomSnapshot.current?.code || '');
+        const snapshotLanguage = String(latestSharedClassroomSnapshot.current?.language || '').toLowerCase();
+
+        if (snapshotCode && snapshotCode !== lastCodeSync.current) {
+          setCode((previousCode) => (previousCode === snapshotCode ? previousCode : snapshotCode));
+          if (snapshotLanguage) {
+            setLanguage(snapshotLanguage);
+          }
+          lastCodeSync.current = snapshotCode;
+          pendingCodeSync.current = snapshotCode;
+        }
+
+        setSharedTeachingNotice((previous) => ({ ...previous, active: false }));
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!facultyEditNotice.active) {
+      return undefined;
+    }
+
+    const intervalId = setInterval(() => {
+      setFacultyEditNow(Date.now());
+    }, 1000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [facultyEditNotice.active]);
+
+  const facultyLastEditedLabel = useMemo(() => {
+    if (!facultyEditNotice.active || !facultyEditNotice.lastEditedAt) {
+      return '';
+    }
+
+    const elapsedMs = Math.max(0, facultyEditNow - facultyEditNotice.lastEditedAt);
+    if (elapsedMs < 2000) {
+      return 'Last edited just now';
+    }
+
+    const elapsedSeconds = Math.floor(elapsedMs / 1000);
+    if (elapsedSeconds < 60) {
+      return `Last edited ${elapsedSeconds}s ago`;
+    }
+
+    const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+    return `Last edited ${elapsedMinutes}m ago`;
+  }, [facultyEditNotice.active, facultyEditNotice.lastEditedAt, facultyEditNow]);
+
   // Set up collaboration event listeners
   // eslint-disable-next-line sonarjs/no-nested-functions
   useEffect(() => {
@@ -575,18 +907,47 @@ export default function Classroom() {
     const unsubscribeCodeChange = on(COLLABORATION_EVENTS.CODE_CHANGE, (data) => {
       const senderEmail = data?.sender_email;
       const senderRole = data?.sender_role;
+      const targetStudentEmail = typeof data?.metadata?.target_student_email === 'string'
+        ? data.metadata.target_student_email.trim().toLowerCase()
+        : '';
       const isTrustedCodeAuthor =
         senderRole === 'faculty' ||
         senderRole === 'admin' ||
         senderEmail === classroom?.faculty_email;
+      const isDirectedStudentEdit = Boolean(targetStudentEmail);
+      const { code: newCode, language: newLang } = data?.metadata || {};
+
+      if (!isDirectedStudentEdit && isTrustedCodeAuthor && typeof newCode === 'string' && newCode) {
+        latestSharedClassroomSnapshot.current = {
+          code: newCode,
+          language: typeof newLang === 'string' ? newLang : language
+        };
+      }
+
+      const shouldApplySharedTeachingUpdate =
+        canBroadcastCodeChanges ||
+        codeViewMode === 'shared';
+
+      if (targetStudentEmail && targetStudentEmail !== String(user?.email || '').trim().toLowerCase()) {
+        return;
+      }
 
       if (senderEmail !== user?.email && data.metadata && isTrustedCodeAuthor) {
-        const { code: newCode, language: newLang } = data.metadata;
+        if (!isDirectedStudentEdit && !shouldApplySharedTeachingUpdate) {
+          // Students in personal mode should keep their own draft untouched while faculty teaches on shared code.
+          showSharedTeachingNotice(data?.sender_name);
+          return;
+        }
+
         if (newCode && newCode !== lastCodeSync.current) {
           setCode((previousCode) => (previousCode === newCode ? previousCode : newCode));
           if (newLang) setLanguage(newLang);
           lastCodeSync.current = newCode;
           pendingCodeSync.current = newCode;
+        }
+
+        if (targetStudentEmail) {
+          showFacultyEditNotice(data?.sender_name);
         }
       }
     });
@@ -727,7 +1088,7 @@ export default function Classroom() {
     return () => {
       unsubscribeFunctions.forEach(fn => fn());
     };
-  }, [isConnected, on, user, classroom?.faculty_email, classroomId, navigate, COLLABORATION_EVENTS, isFacultyOrAdmin, interventionReturnTarget]);
+  }, [isConnected, on, user, classroom?.faculty_email, classroomId, navigate, COLLABORATION_EVENTS, isFacultyOrAdmin, interventionReturnTarget, canBroadcastCodeChanges, codeViewMode]);
 
   useEffect(() => {
     if (!classroom?.language) {
@@ -738,12 +1099,14 @@ export default function Classroom() {
     const nextSnippet = DEFAULT_CODE_SNIPPETS[normalizedLanguage] || DEFAULT_CODE_SNIPPETS.javascript;
     const defaultSnippets = Object.values(DEFAULT_CODE_SNIPPETS);
 
-    setLanguage(normalizedLanguage);
+    if (!codeRestoredFromCache.current) {
+      setLanguage(normalizedLanguage);
+    }
     setCode((previousCode) => {
       const hasUserCode = typeof previousCode === 'string' && previousCode.trim().length > 0;
       const isTemplateCode = defaultSnippets.includes(previousCode);
 
-      if (!hasUserCode || isTemplateCode) {
+      if ((!hasUserCode || isTemplateCode) && !codeRestoredFromCache.current) {
         return nextSnippet;
       }
 
@@ -821,8 +1184,7 @@ export default function Classroom() {
     // Mark changes for version control auto-save
     versionControl.markPendingChanges();
 
-    // Send typing indicator only for users allowed to broadcast.
-    if (isConnected && canBroadcastCodeChanges) {
+    if (isConnected) {
       sendTyping();
     }
 
@@ -832,9 +1194,15 @@ export default function Classroom() {
     }
 
     codeChangeTimeout.current = setTimeout(() => {
-      if (isConnected && canBroadcastCodeChanges && pendingCodeSync.current === newCode && newCode !== lastCodeSync.current) {
+      if (isConnected && canBroadcastCodeChanges && codeViewMode === 'shared' && pendingCodeSync.current === newCode && newCode !== lastCodeSync.current) {
         syncCode(newCode, language);
         lastCodeSync.current = newCode;
+      } else if (isConnected && !canBroadcastCodeChanges && codeViewMode === 'personal' && pendingCodeSync.current === newCode) {
+        emit(COLLABORATION_EVENTS.PERSONAL_CODE_CHANGE, {
+          code: newCode,
+          language,
+          timestamp: Date.now()
+        });
       }
     }, 800); // 800ms debounce
   };
@@ -861,8 +1229,14 @@ export default function Classroom() {
 
     setLanguage(newLanguage);
     
-    if (isConnected && canBroadcastCodeChanges) {
+    if (isConnected && canBroadcastCodeChanges && codeViewMode === 'shared') {
       emit(COLLABORATION_EVENTS.LANGUAGE_CHANGE, {
+        language: newLanguage,
+        timestamp: Date.now()
+      });
+    } else if (isConnected && !canBroadcastCodeChanges && codeViewMode === 'personal') {
+      emit(COLLABORATION_EVENTS.PERSONAL_CODE_CHANGE, {
+        code,
         language: newLanguage,
         timestamp: Date.now()
       });
@@ -1120,8 +1494,14 @@ export default function Classroom() {
     setLanguage(restoredLanguage);
     
     // Update collaboration if connected
-    if (isConnected && canBroadcastCodeChanges) {
+    if (isConnected && canBroadcastCodeChanges && codeViewMode === 'shared') {
       syncCode(restoredCode, restoredLanguage);
+    } else if (isConnected && !canBroadcastCodeChanges && codeViewMode === 'personal') {
+      emit(COLLABORATION_EVENTS.PERSONAL_CODE_CHANGE, {
+        code: restoredCode,
+        language: restoredLanguage,
+        timestamp: Date.now()
+      });
     }
   };
 
@@ -1154,6 +1534,28 @@ export default function Classroom() {
   const participants = Array.from(participantMap.values());
   const onlineCount = activeUsers.size || participants.length;
   const currentFileExtension = LANGUAGE_EXTENSIONS[language] || 'txt';
+  const focusedStudentParticipant = focusStudentFromUrl
+    ? participants.find((participant) => String(participant?.email || '').trim().toLowerCase() === focusStudentFromUrl)
+    : null;
+  const activeStudentParticipant = participants.find((participant) => participant.role === 'student');
+  const interventionStudentParticipant = focusedStudentParticipant || activeStudentParticipant;
+  const codeOwnerLabel = (() => {
+    if (roomType === 'intervention' && interventionStudentParticipant && canBroadcastCodeChanges) {
+      return `Student code: ${interventionStudentParticipant.name}`;
+    }
+
+    if (canBroadcastCodeChanges && codeViewMode === 'shared') {
+      return 'Shared classroom code (faculty-controlled)';
+    }
+
+    if (!canBroadcastCodeChanges && codeViewMode === 'shared') {
+      const facultyName = getDisplayNameFromEmail(classroom?.faculty_email, classroom);
+      return `Classroom code (read-only) · ${facultyName}`;
+    }
+
+    return 'My code (editable)';
+  })();
+
   let submitButtonLabel = 'Submit';
   if (isSubmitting) {
     submitButtonLabel = 'Submitting...';
@@ -1221,6 +1623,36 @@ export default function Classroom() {
         )}
       </div>
 
+      {facultyEditNotice.active && !canBroadcastCodeChanges && (
+        <div className="border-b border-cyan-500/25 bg-cyan-500/10 px-3 sm:px-4 py-1.5 flex items-center justify-between gap-3">
+          <div className="min-w-0 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-300 animate-pulse" />
+            <p className="text-[10px] sm:text-[11px] text-cyan-100 truncate">
+              {facultyEditNotice.editorName || 'Faculty'} is editing your code in real time
+            </p>
+          </div>
+          <span className="hidden sm:inline text-[10px] text-cyan-200/80">{facultyLastEditedLabel || 'Live sync active'}</span>
+        </div>
+      )}
+
+      {sharedTeachingNotice.active && !canBroadcastCodeChanges && roomType !== 'intervention' && codeViewMode === 'personal' && (
+        <div className="border-b border-indigo-500/25 bg-indigo-500/10 px-3 sm:px-4 py-2 flex items-center justify-between gap-3">
+          <div className="min-w-0 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-300 animate-pulse" />
+            <p className="text-[10px] sm:text-[11px] text-indigo-100 truncate">
+              {sharedTeachingNotice.teacherName || 'Faculty'} is teaching on Classroom Code. Switch to Classroom Code to follow live.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleCodeViewModeChange('shared')}
+            className="text-[10px] sm:text-[11px] font-medium text-indigo-100 bg-indigo-500/20 border border-indigo-400/30 hover:bg-indigo-500/30 rounded-md px-2.5 py-1 transition-colors whitespace-nowrap"
+          >
+            Switch Now
+          </button>
+        </div>
+      )}
+
       {roomType === 'intervention' && (
         <div className="border-b border-amber-500/20 bg-amber-500/10 px-3 sm:px-4 py-2 flex items-center justify-between gap-3">
           <div className="min-w-0">
@@ -1249,6 +1681,7 @@ export default function Classroom() {
                 currentUserEmail={user?.email}
                 currentUserRole={user?.role}
                 onRemoveStudent={handleRemoveStudent}
+                onOpenStudentCode={handleOpenStudentCode}
                 removingStudentEmail={removeStudentMutation.isPending ? removeStudentMutation.variables : null}
               />
             </div>
@@ -1265,6 +1698,7 @@ export default function Classroom() {
               currentUserEmail={user?.email}
               currentUserRole={user?.role}
               onRemoveStudent={handleRemoveStudent}
+              onOpenStudentCode={handleOpenStudentCode}
               removingStudentEmail={removeStudentMutation.isPending ? removeStudentMutation.variables : null}
             />
           </motion.div>
@@ -1286,6 +1720,24 @@ export default function Classroom() {
             </button>
             <div className="w-px h-3.5 bg-slate-800 mx-1" />
             <span className="text-[10px] font-mono text-slate-600">main.{currentFileExtension}</span>
+            {!canBroadcastCodeChanges && (
+              <div className="ml-auto flex items-center gap-1 rounded-lg border border-slate-800/70 bg-slate-900/50 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => handleCodeViewModeChange('shared')}
+                  className={`h-6 px-2 rounded-md text-[10px] transition-colors ${codeViewMode === 'shared' ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-200'}`}
+                >
+                  Classroom Code
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCodeViewModeChange('personal')}
+                  className={`h-6 px-2 rounded-md text-[10px] transition-colors ${codeViewMode === 'personal' ? 'bg-cyan-600 text-white' : 'text-slate-500 hover:text-slate-200'}`}
+                >
+                  My Code
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex-1 p-2 sm:p-3 overflow-hidden min-h-[260px]">
@@ -1298,7 +1750,8 @@ export default function Classroom() {
               onRun={handleRun}
               onSubmit={handleSubmit}
               isRunning={isRunning || interactiveSessionActive}
-              readOnly={!canEditCode}
+              readOnly={!canEditCode || (!canBroadcastCodeChanges && codeViewMode === 'shared')}
+              ownerLabel={codeOwnerLabel}
               errorLineNumbers={errorLineNumbers}
               submitDisabled={hasSubmittedCurrentAssignment || isSubmitting}
               submitLabel={submitButtonLabel}

@@ -254,12 +254,13 @@ export default function StudentDashboard() {
   const joinMutation = useMutation({
     mutationFn: async (code) => {
       setJoinError('');
+      const normalizedCode = String(code || '').trim().replace(/\s+/g, '').toUpperCase();
 
       const response = await fetch(`${API_BASE_URL}/api/classrooms/join`, {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
-          code: code.trim().toUpperCase(),
+          code: normalizedCode,
         }),
       });
 
@@ -419,7 +420,7 @@ export default function StudentDashboard() {
                     <input
                       placeholder="e.g. DSA101"
                       value={joinCode}
-                      onChange={(e) => { setJoinCode(e.target.value.toUpperCase()); setJoinError(''); }}
+                      onChange={(e) => { setJoinCode(e.target.value.toUpperCase().replace(/\s+/g, '')); setJoinError(''); }}
                       onKeyDown={(e) => e.key === 'Enter' && joinCode.trim() && joinMutation.mutate(joinCode)}
                       className="w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-[13px] font-mono placeholder:text-slate-600 outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-colors"
                     />
