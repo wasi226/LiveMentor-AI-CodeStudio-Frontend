@@ -34,6 +34,10 @@ function resolveApiBaseUrl() {
     return 'http://localhost:3001';
   }
 
+  if (isBrowser) {
+    return globalThis.window.location.origin;
+  }
+
   return '';
 }
 
@@ -180,16 +184,6 @@ class CodeExecutionService {
 
     const token = getAuthToken();
     const executeEndpoint = `${API_BASE_URL}/api/code/execute`;
-
-    if (!API_BASE_URL) {
-      return {
-        success: false,
-        error: 'Backend API URL is not configured. Set VITE_API_BASE_URL in frontend environment variables.',
-        output: '',
-        executionTime: 0,
-        memory: 0
-      };
-    }
 
     if (!token) {
       return {
