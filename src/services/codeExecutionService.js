@@ -6,7 +6,7 @@
 import { getAuthToken } from '@/lib/authStorage';
 
 const viteEnv = /** @type {any} */ (import.meta)?.env || {};
-const API_BASE_URL = viteEnv.VITE_API_BASE_URL || 'http://localhost:3001';
+const API_BASE_URL = resolveApiBaseUrl();
 
 const LANGUAGE_MAP = {
   javascript: 'JavaScript',
@@ -19,7 +19,56 @@ const LANGUAGE_MAP = {
   rust: 'Rust'
 };
 
+function resolveApiBaseUrl() {
+  const configured = String(viteEnv.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
+
+  if (configured) {
+    return configured;
+  }
+
+  const isBrowser = globalThis.window !== undefined;
+  const hostname = isBrowser ? globalThis.window.location.hostname : '';
+  const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
+
+  if (viteEnv.DEV || isLocalHost) {
+    return 'http://localhost:3001';
+  }
+
+  if (isBrowser) {
+    // Production fallback for same-origin deployments when env var is missing.
+    return globalThis.window.location.origin;
+  }
+
+  return '';
+}
+
 class CodeExecutionService {
+  buildExecutionServiceError(error, language, code, executeEndpoint) {
+    const isTimeout = error?.name === 'AbortError';
+    const isNetworkError = error instanceof TypeError && /fetch/i.test(String(error?.message || ''));
+    const networkErrorMessage = [
+      `Execution service network error while calling ${executeEndpoint}.`,
+      'Check that VITE_API_BASE_URL points to your deployed backend and that backend CORS allows this frontend origin.'
+    ].join(' ');
+
+    let errorMessage = `Execution service error: ${error.message}`;
+
+    if (isTimeout) {
+      errorMessage = 'Execution request timed out after 20 seconds. Please check if backend server is running and try again.';
+    } else if (isNetworkError) {
+      errorMessage = networkErrorMessage;
+    }
+
+    return {
+      success: false,
+      error: errorMessage,
+      explanation: this.buildErrorExplanation(error?.message || 'Execution service error', language, code),
+      output: '',
+      executionTime: 0,
+      memory: 0
+    };
+  }
+
   extractLineNumbers(errorMessage) {
     const text = String(errorMessage || '');
     const matches = [
@@ -129,6 +178,17 @@ class CodeExecutionService {
     }
 
     const token = getAuthToken();
+    const executeEndpoint = `${API_BASE_URL}/api/code/execute`;
+
+    if (!API_BASE_URL) {
+      return {
+        success: false,
+        error: 'Backend API URL is not configured. Set VITE_API_BASE_URL in frontend environment variables.',
+        output: '',
+        executionTime: 0,
+        memory: 0
+      };
+    }
 
     if (!token) {
       return {
@@ -146,13 +206,13 @@ class CodeExecutionService {
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
       console.log('[DEBUG FE] Sending execution request:', {
-        url: `${API_BASE_URL}/api/code/execute`,
+        url: executeEndpoint,
         language,
         codeLength: code.length,
         hasToken: !!token
       });
       
-      const response = await fetch(`${API_BASE_URL}/api/code/execute`, {
+      const response = await fetch(executeEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -236,17 +296,7 @@ class CodeExecutionService {
       };
     } catch (error) {
       console.error('Code execution error:', error);
-      const isTimeout = error?.name === 'AbortError';
-      return {
-        success: false,
-        error: isTimeout
-          ? 'Execution request timed out after 20 seconds. Please check if backend server is running and try again.'
-          : `Execution service error: ${error.message}`,
-        explanation: this.buildErrorExplanation(error?.message || 'Execution service error', language, code),
-        output: '',
-        executionTime: 0,
-        memory: 0
-      };
+      return this.buildExecutionServiceError(error, language, code, executeEndpoint);
     }
   }
 
