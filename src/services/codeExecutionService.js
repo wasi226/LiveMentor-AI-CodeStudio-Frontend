@@ -34,11 +34,6 @@ function resolveApiBaseUrl() {
     return 'http://localhost:3001';
   }
 
-  if (isBrowser) {
-    // Production fallback for same-origin deployments when env var is missing.
-    return globalThis.window.location.origin;
-  }
-
   return '';
 }
 
@@ -105,6 +100,12 @@ class CodeExecutionService {
 
     const suggestions = [];
     let likelyCause = 'The program failed during compile or execution due to invalid syntax, wrong API usage, or unexpected input handling.';
+
+    if (normalizedError.includes('status 405') || normalizedError.includes('method not allowed')) {
+      likelyCause = 'The request reached the wrong endpoint or used an unsupported HTTP method for that endpoint.';
+      suggestions.push('Confirm VITE_API_BASE_URL points to your backend service, not the frontend domain.');
+      suggestions.push('Ensure execution calls POST /api/code/execute on the backend URL.');
+    }
 
     if (normalizedError.includes('syntaxerror') || normalizedError.includes('parse') || normalizedError.includes('unexpected token')) {
       likelyCause = 'Your code has a syntax issue, so the compiler/interpreter cannot understand the source.';
