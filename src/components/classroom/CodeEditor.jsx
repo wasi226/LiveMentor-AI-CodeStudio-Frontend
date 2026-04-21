@@ -30,7 +30,7 @@ export const DEFAULT_CODE_SNIPPETS = {
   rust:       `// Welcome to CodeClass.ai\nfn main() {\n    // Write your solution here\n    println!("Hello, world!");\n}`,
 };
 
-export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, isRunning, readOnly = false, ownerLabel = '', errorLineNumbers = [], submitDisabled = false, submitLabel = 'Submit' }) {
+export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, onReset, isRunning, readOnly = false, ownerLabel = '', errorLineNumbers = [], submitDisabled = false, submitLabel = 'Submit' }) {
   const [copied, setCopied] = useState(false);
   const [showVisualizer, setShowVisualizer] = useState(false);
   const textareaRef = useRef(null);
@@ -59,6 +59,11 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
 
   const handleReset = () => {
     if (readOnly) {
+      return;
+    }
+
+    if (typeof onReset === 'function') {
+      onReset();
       return;
     }
 

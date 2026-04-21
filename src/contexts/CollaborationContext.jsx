@@ -10,9 +10,9 @@ import React, { createContext, useContext, useEffect, useRef, useState, useCallb
 import { io } from 'socket.io-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { getAuthToken } from '@/lib/authStorage';
+import { API_BASE_URL } from '@/lib/apiBaseUrl';
 
 const CollaborationContext = createContext();
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 const SOCKET_IO_PATH = import.meta.env.VITE_SOCKET_IO_PATH || '/socket.io';
 
 // Real-time collaboration events
@@ -334,11 +334,12 @@ export const CollaborationProvider = ({ children }) => {
   /**
    * Sync code changes in real-time
    */
-  const syncCode = useCallback(async (code, language, cursorPosition = 0) => {
+  const syncCode = useCallback(async (code, language, cursorPosition = 0, options = {}) => {
     await emit(COLLABORATION_EVENTS.CODE_CHANGE, {
       code,
       language,
       cursorPosition,
+      ...options,
       timestamp: Date.now()
     });
   }, [emit]);

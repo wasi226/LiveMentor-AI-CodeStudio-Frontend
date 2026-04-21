@@ -20,10 +20,10 @@ import ChartCard from '@/components/ui-custom/ChartCard';
 import TopBar from '@/components/ui-custom/TopBar';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/AuthContext';
+import { API_BASE_URL } from '@/lib/apiBaseUrl';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Filler, Tooltip, Legend);
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const CHART_COLORS = {

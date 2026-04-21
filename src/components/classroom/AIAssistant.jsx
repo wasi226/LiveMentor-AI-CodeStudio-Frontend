@@ -2,8 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, Send, User, Zap } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { getAuthToken } from '@/lib/authStorage';
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+import { API_BASE_URL } from '@/lib/apiBaseUrl';
 
 const QUICK_PROMPTS = [
   'Explain this code',

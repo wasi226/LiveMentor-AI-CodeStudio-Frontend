@@ -10,9 +10,8 @@ import ClassroomCard from '@/components/ui-custom/ClassroomCard';
 import TopBar from '@/components/ui-custom/TopBar';
 import { useAuth } from '@/lib/AuthContext';
 import { useCollaboration } from '@/contexts/CollaborationContext';
+import { API_BASE_URL } from '@/lib/apiBaseUrl';
 import moment from 'moment';
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
 const normalizeClassroom = (classroom) => ({
   ...classroom,

@@ -98,7 +98,7 @@ export default function Landing() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#04080f] text-white overflow-x-hidden">
+    <div className="relative min-h-screen bg-[#04080f] text-white overflow-x-hidden">
 
       {/* ── NAVBAR ── */}
       <nav className="fixed top-0 w-full z-50">

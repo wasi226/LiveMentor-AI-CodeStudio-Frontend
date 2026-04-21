@@ -14,9 +14,9 @@ import TopBar from '@/components/ui-custom/TopBar';
 import CodeEditor from '@/components/classroom/CodeEditor';
 import { useAuth } from '@/lib/AuthContext';
 import { getAuthToken } from '@/lib/authStorage';
+import { API_BASE_URL } from '@/lib/apiBaseUrl';
 import moment from 'moment';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 const SOCKET_IO_PATH = import.meta.env.VITE_SOCKET_IO_PATH || '/socket.io';
 const LIVE_CODE_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 
@@ -1796,7 +1796,7 @@ export default function FacultyDashboard() {
 
               <div className="rounded-xl border border-slate-800/60 bg-slate-900/20 p-3 space-y-3">
                 {hasClassrooms ? (
-                  <Select value={selectedClassroomId || undefined} onValueChange={setSelectedClassroomId}>
+                  <Select value={selectedClassroomId} onValueChange={setSelectedClassroomId}>
                     <SelectTrigger className="bg-slate-900 border-slate-800 text-white h-9 text-[12px]">
                       <SelectValue placeholder="Select classroom" />
                     </SelectTrigger>

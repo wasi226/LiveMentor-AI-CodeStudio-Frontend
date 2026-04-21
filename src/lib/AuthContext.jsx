@@ -5,9 +5,9 @@ import {
   initializeAuthTokenFromLegacyStorage,
   setAuthToken
 } from './authStorage';
+import { API_BASE_URL } from './apiBaseUrl';
 
 const AuthContext = createContext();
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);

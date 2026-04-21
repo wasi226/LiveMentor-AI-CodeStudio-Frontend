@@ -14,11 +14,11 @@ import codeExecutionService from '@/services/codeExecutionService';
 import versionControl from '@/services/versionControl';
 import { useCollaboration } from '@/contexts/CollaborationContext';
 import { useAuth } from '@/lib/AuthContext';
+import { API_BASE_URL } from '@/lib/apiBaseUrl';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 const CHAT_CACHE_KEY_PREFIX = 'lm_chat_cache_v1';
 const CHAT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const CODE_CACHE_KEY_PREFIX = 'lm_code_cache_v1';
+const CODE_CACHE_KEY_PREFIX = 'lm_code_cache_v2';
 const LANGUAGE_EXTENSIONS = {
   javascript: 'js',
   python: 'py',
@@ -238,6 +238,18 @@ export default function Classroom() {
     ? facultyDashboardTarget
     : '/student-dashboard';
   const interventionReturnTarget = returnTo || defaultDashboardTarget;
+  const classroomTeachingTarget = (() => {
+    if (!classroomId) {
+      return '/classroom';
+    }
+
+    const params = new URLSearchParams({ id: classroomId });
+    if (assignmentIdFromUrl) {
+      params.set('assignment', assignmentIdFromUrl);
+    }
+
+    return `/classroom?${params.toString()}`;
+  })();
 
   const [code, setCode] = useState(DEFAULT_CODE_SNIPPETS.javascript);
   const [language, setLanguage] = useState('javascript');
@@ -269,10 +281,20 @@ export default function Classroom() {
   const autoSaveInitialized = useRef(false);
   const previousMobileState = useRef(isMobileLayout);
   const loadedServerState = useRef(false);
+  const activeCodeSource = useRef('server');
   const facultyEditNoticeTimeout = useRef(null);
   const sharedTeachingNoticeTimeout = useRef(null);
   const chatCacheKey = useMemo(() => getChatCacheKey(classroomId, user?.email), [classroomId, user?.email]);
-  const codeCacheKey = useMemo(() => getCodeCacheKey(classroomId, user?.email, codeViewMode), [classroomId, user?.email, codeViewMode]);
+  const codeCacheScopeKey = useMemo(() => {
+    const normalizedFocusStudent = String(focusStudentFromUrl || '').trim().toLowerCase();
+
+    if (codeViewMode === 'shared' && roomType === 'intervention' && normalizedFocusStudent) {
+      return `intervention:${normalizedFocusStudent}`;
+    }
+
+    return codeViewMode;
+  }, [codeViewMode, roomType, focusStudentFromUrl]);
+  const codeCacheKey = useMemo(() => getCodeCacheKey(classroomId, user?.email, codeCacheScopeKey), [classroomId, user?.email, codeCacheScopeKey]);
   const codeRestoredFromCache = useRef(false);
   
   // Real-time collaboration
@@ -363,9 +385,58 @@ export default function Classroom() {
     return canBroadcastCodeChanges || codeViewMode === 'personal';
   }, [canBroadcastCodeChanges, codeViewMode]);
 
+  const participants = useMemo(() => {
+    const participantMap = new Map();
+
+    if (classroom?.faculty_email) {
+      participantMap.set(classroom.faculty_email, {
+        email: classroom.faculty_email,
+        name: 'Professor',
+        role: 'faculty'
+      });
+    }
+
+    (classroom?.student_emails || []).forEach((email) => {
+      participantMap.set(email, {
+        email,
+        name: email.split('@')[0],
+        role: 'student'
+      });
+    });
+
+    activeUsers.forEach((participant, email) => {
+      participantMap.set(email, {
+        email,
+        name: participant.name || participantMap.get(email)?.name || email.split('@')[0],
+        role: participant.role || participantMap.get(email)?.role || 'student'
+      });
+    });
+
+    return Array.from(participantMap.values());
+  }, [activeUsers, classroom?.faculty_email, classroom?.student_emails]);
+
+  const focusedStudentParticipant = useMemo(() => {
+    if (!focusStudentFromUrl) {
+      return null;
+    }
+
+    return participants.find((participant) => (
+      String(participant?.email || '').trim().toLowerCase() === focusStudentFromUrl
+    )) || null;
+  }, [focusStudentFromUrl, participants]);
+
+  const activeStudentParticipant = useMemo(() => {
+    return participants.find((participant) => participant.role === 'student') || null;
+  }, [participants]);
+
+  const interventionStudentParticipant = focusedStudentParticipant || activeStudentParticipant;
+
   const effectiveAssignmentId = assignmentIdFromUrl || classroomAssignmentId;
 
   const codeStateScope = codeViewMode;
+  const interventionTargetStudentEmail = roomType === 'intervention' && focusStudentFromUrl
+    ? String(focusStudentFromUrl).trim().toLowerCase()
+    : '';
 
   const hasSubmittedCurrentAssignment = useMemo(() => {
     if (!effectiveAssignmentId) {
@@ -398,14 +469,19 @@ export default function Classroom() {
         return [];
       }
     },
-    enabled: Boolean(classroomId && user?.email),
+    enabled: Boolean((classroom?.id || classroom?._id) && user?.email),
   });
 
   const { data: serverCodeState = null } = useQuery({
-    queryKey: ['classroomCodeState', classroomId, user?.email, codeStateScope],
+    queryKey: ['classroomCodeState', classroomId, user?.email, codeStateScope, interventionTargetStudentEmail],
     queryFn: async () => {
+      const query = new URLSearchParams({ scope: codeStateScope });
+      if (interventionTargetStudentEmail) {
+        query.set('targetStudentEmail', interventionTargetStudentEmail);
+      }
+
       const response = await fetch(
-        `${API_BASE_URL}/api/classrooms/${classroomId}/code-state?scope=${encodeURIComponent(codeStateScope)}`,
+        `${API_BASE_URL}/api/classrooms/${classroomId}/code-state?${query.toString()}`,
         { headers: getAuthHeaders() }
       );
 
@@ -519,9 +595,19 @@ export default function Classroom() {
       return;
     }
 
+    const fallbackLanguage = String(classroom?.language || language || 'javascript').toLowerCase();
+    const fallbackCode = DEFAULT_CODE_SNIPPETS[fallbackLanguage] || DEFAULT_CODE_SNIPPETS.javascript;
+
     try {
       const rawCache = globalThis.localStorage?.getItem(codeCacheKey);
       if (!rawCache) {
+        setCode(fallbackCode);
+        pendingCodeSync.current = fallbackCode;
+        lastCodeSync.current = fallbackCode;
+        if (fallbackLanguage) {
+          setLanguage(fallbackLanguage);
+        }
+        activeCodeSource.current = 'server';
         codeRestoredFromCache.current = true;
         return;
       }
@@ -534,6 +620,7 @@ export default function Classroom() {
         setCode(cachedCode);
         pendingCodeSync.current = cachedCode;
         lastCodeSync.current = cachedCode;
+        activeCodeSource.current = 'local';
       }
 
       if (cachedLanguage) {
@@ -541,10 +628,17 @@ export default function Classroom() {
       }
     } catch (cacheError) {
       console.warn('Failed to restore cached classroom code:', cacheError);
+      setCode(fallbackCode);
+      pendingCodeSync.current = fallbackCode;
+      lastCodeSync.current = fallbackCode;
+      if (fallbackLanguage) {
+        setLanguage(fallbackLanguage);
+      }
+      activeCodeSource.current = 'server';
     } finally {
       codeRestoredFromCache.current = true;
     }
-  }, [codeCacheKey]);
+  }, [codeCacheKey, classroom?.language, language]);
 
   useEffect(() => {
     if (!codeCacheKey || !codeRestoredFromCache.current) {
@@ -564,6 +658,11 @@ export default function Classroom() {
 
   useEffect(() => {
     if (loadedServerState.current || !serverCodeState) {
+      return;
+    }
+
+    if (codeViewMode === 'personal' && activeCodeSource.current === 'local') {
+      loadedServerState.current = true;
       return;
     }
 
@@ -596,17 +695,27 @@ export default function Classroom() {
 
     codeStateSaveTimeout.current = setTimeout(async () => {
       try {
+        const targetStudentEmail = isFacultyOrAdmin && roomType === 'intervention' && interventionStudentParticipant?.email
+          ? String(interventionStudentParticipant.email).trim().toLowerCase()
+          : '';
+
+        const requestBody = {
+          code,
+          language,
+          scope: codeStateScope
+        };
+
+        if (targetStudentEmail) {
+          requestBody.targetStudentEmail = targetStudentEmail;
+        }
+
         await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/code-state`, {
           method: 'PUT',
           headers: {
             ...getAuthHeaders(),
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({
-            code,
-            language,
-            scope: codeStateScope
-          })
+          body: JSON.stringify(requestBody)
         });
       } catch (saveError) {
         console.warn('Failed to save classroom code state to backend:', saveError);
@@ -747,6 +856,24 @@ export default function Classroom() {
       console.error('Failed to open student code session:', openError);
       setError(openError?.message || 'Unable to open student code session.');
     }
+  };
+
+  const handleReturnToTeachingCode = async () => {
+    const roomIdToClose = resolvedRoomId || interventionRoomId;
+
+    if (classroomId && roomIdToClose) {
+      try {
+        await fetch(`${API_BASE_URL}/api/classrooms/${classroomId}/interventions/${encodeURIComponent(roomIdToClose)}/close`, {
+          method: 'POST',
+          headers: getAuthHeaders()
+        });
+      } catch (error) {
+        console.warn('Failed to close intervention room before returning to teaching code:', error);
+      }
+    }
+
+    setResolvedRoomId(null);
+    navigate(classroomTeachingTarget, { replace: true });
   };
 
   useEffect(() => {
@@ -1011,6 +1138,47 @@ export default function Classroom() {
       navigate(interventionReturnTarget, { replace: true });
     });
 
+    const unsubscribeInterventionOpened = on('intervention_opened', (data) => {
+      if (isFacultyOrAdmin) {
+        return;
+      }
+
+      const openedRoomId = String(data?.metadata?.room_id || '').trim();
+      const targetStudentEmail = String(data?.metadata?.student_email || '').trim().toLowerCase();
+      const currentUserEmail = String(user?.email || '').trim().toLowerCase();
+
+      if (!openedRoomId || !targetStudentEmail || targetStudentEmail !== currentUserEmail) {
+        return;
+      }
+
+      setResolvedRoomId((previousRoomId) => (previousRoomId === openedRoomId ? previousRoomId : openedRoomId));
+    });
+
+    const unsubscribePersonalCodeChange = on(COLLABORATION_EVENTS.PERSONAL_CODE_CHANGE, (data) => {
+      if (!canBroadcastCodeChanges || roomType !== 'intervention') {
+        return;
+      }
+
+      const senderEmail = String(data?.sender_email || '').trim().toLowerCase();
+      const expectedStudentEmail = String(interventionStudentParticipant?.email || '').trim().toLowerCase();
+
+      if (!senderEmail || !expectedStudentEmail || senderEmail !== expectedStudentEmail) {
+        return;
+      }
+
+      const incomingCode = typeof data?.metadata?.code === 'string' ? data.metadata.code : '';
+      const incomingLanguage = typeof data?.metadata?.language === 'string' ? data.metadata.language : '';
+
+      if (incomingCode && incomingCode !== lastCodeSync.current) {
+        setCode((previousCode) => (previousCode === incomingCode ? previousCode : incomingCode));
+        if (incomingLanguage) {
+          setLanguage(incomingLanguage);
+        }
+        lastCodeSync.current = incomingCode;
+        pendingCodeSync.current = incomingCode;
+      }
+    });
+
     const unsubscribeRemoved = on('collaboration:removed', (data) => {
       const removedClassroomId = String(data?.classroomId || '');
       if (!removedClassroomId || removedClassroomId !== String(classroomId || '')) {
@@ -1078,6 +1246,8 @@ export default function Classroom() {
       unsubscribeExecutionResult,
       unsubscribeChatMessage,
       unsubscribeInterventionClosed,
+      unsubscribeInterventionOpened,
+      unsubscribePersonalCodeChange,
       unsubscribeRemoved,
       unsubscribeTerminalStarted,
       unsubscribeTerminalOutput,
@@ -1088,7 +1258,7 @@ export default function Classroom() {
     return () => {
       unsubscribeFunctions.forEach(fn => fn());
     };
-  }, [isConnected, on, user, classroom?.faculty_email, classroomId, navigate, COLLABORATION_EVENTS, isFacultyOrAdmin, interventionReturnTarget, canBroadcastCodeChanges, codeViewMode]);
+  }, [isConnected, on, user, classroom?.faculty_email, classroomId, navigate, COLLABORATION_EVENTS, isFacultyOrAdmin, interventionReturnTarget, canBroadcastCodeChanges, codeViewMode, roomType, interventionStudentParticipant?.email]);
 
   useEffect(() => {
     if (!classroom?.language) {
@@ -1172,12 +1342,34 @@ export default function Classroom() {
     await removeStudentMutation.mutateAsync(studentEmail);
   };
 
+  const handleResetCode = () => {
+    if (!canEditCode) {
+      return;
+    }
+
+    const defaultCode = DEFAULT_CODE_SNIPPETS[language] || DEFAULT_CODE_SNIPPETS.javascript;
+
+    activeCodeSource.current = 'server';
+    setCode(defaultCode);
+    pendingCodeSync.current = defaultCode;
+    lastCodeSync.current = defaultCode;
+
+    if (codeCacheKey) {
+      try {
+        globalThis.localStorage?.removeItem(codeCacheKey);
+      } catch (cacheError) {
+        console.warn('Failed to clear classroom code cache:', cacheError);
+      }
+    }
+  };
+
   // Enhanced code change handler with real-time sync and version control
   const handleCodeChange = (newCode) => {
     if (!canEditCode) {
       return;
     }
 
+    activeCodeSource.current = 'local';
     setCode(newCode);
     pendingCodeSync.current = newCode;
 
@@ -1195,7 +1387,11 @@ export default function Classroom() {
 
     codeChangeTimeout.current = setTimeout(() => {
       if (isConnected && canBroadcastCodeChanges && codeViewMode === 'shared' && pendingCodeSync.current === newCode && newCode !== lastCodeSync.current) {
-        syncCode(newCode, language);
+        const targetStudentEmail = roomType === 'intervention' && interventionStudentParticipant?.email
+          ? String(interventionStudentParticipant.email).trim().toLowerCase()
+          : '';
+
+        syncCode(newCode, language, 0, targetStudentEmail ? { target_student_email: targetStudentEmail } : {});
         lastCodeSync.current = newCode;
       } else if (isConnected && !canBroadcastCodeChanges && codeViewMode === 'personal' && pendingCodeSync.current === newCode) {
         emit(COLLABORATION_EVENTS.PERSONAL_CODE_CHANGE, {
@@ -1227,6 +1423,7 @@ export default function Classroom() {
       return;
     }
 
+    activeCodeSource.current = 'local';
     setLanguage(newLanguage);
     
     if (isConnected && canBroadcastCodeChanges && codeViewMode === 'shared') {
@@ -1490,6 +1687,7 @@ export default function Classroom() {
       return;
     }
 
+    activeCodeSource.current = 'local';
     setCode(restoredCode);
     setLanguage(restoredLanguage);
     
@@ -1505,47 +1703,24 @@ export default function Classroom() {
     }
   };
 
-  const participantMap = new Map();
-
-  if (classroom?.faculty_email) {
-    participantMap.set(classroom.faculty_email, {
-      email: classroom.faculty_email,
-      name: 'Professor',
-      role: 'faculty'
-    });
-  }
-
-  (classroom?.student_emails || []).forEach((email) => {
-    participantMap.set(email, {
-      email,
-      name: email.split('@')[0],
-      role: 'student'
-    });
-  });
-
-  activeUsers.forEach((participant, email) => {
-    participantMap.set(email, {
-      email,
-      name: participant.name || participantMap.get(email)?.name || email.split('@')[0],
-      role: participant.role || participantMap.get(email)?.role || 'student'
-    });
-  });
-
-  const participants = Array.from(participantMap.values());
   const onlineCount = activeUsers.size || participants.length;
   const currentFileExtension = LANGUAGE_EXTENSIONS[language] || 'txt';
-  const focusedStudentParticipant = focusStudentFromUrl
-    ? participants.find((participant) => String(participant?.email || '').trim().toLowerCase() === focusStudentFromUrl)
-    : null;
-  const activeStudentParticipant = participants.find((participant) => participant.role === 'student');
-  const interventionStudentParticipant = focusedStudentParticipant || activeStudentParticipant;
+  const currentUserDisplayName = (() => {
+    const userName = String(user?.full_name || user?.fullName || user?.name || '').trim();
+    if (userName) {
+      return userName;
+    }
+
+    const userEmail = String(user?.email || '').trim();
+    return userEmail ? userEmail.split('@')[0] : 'My';
+  })();
   const codeOwnerLabel = (() => {
     if (roomType === 'intervention' && interventionStudentParticipant && canBroadcastCodeChanges) {
       return `Student code: ${interventionStudentParticipant.name}`;
     }
 
     if (canBroadcastCodeChanges && codeViewMode === 'shared') {
-      return 'Shared classroom code (faculty-controlled)';
+      return `${currentUserDisplayName} · Faculty teaching code`;
     }
 
     if (!canBroadcastCodeChanges && codeViewMode === 'shared') {
@@ -1553,7 +1728,7 @@ export default function Classroom() {
       return `Classroom code (read-only) · ${facultyName}`;
     }
 
-    return 'My code (editable)';
+    return `${currentUserDisplayName}'s code (editable)`;
   })();
 
   let submitButtonLabel = 'Submit';
@@ -1661,10 +1836,19 @@ export default function Classroom() {
               This session is private to the faculty and selected student.
             </p>
           </div>
-          <div className="hidden sm:flex items-center gap-2 text-[10px] text-amber-100/80">
-            <span className="px-2 py-1 rounded-full border border-amber-400/30 bg-amber-400/10">
+          <div className="flex items-center gap-2 text-[10px] text-amber-100/80">
+            <span className="hidden sm:inline px-2 py-1 rounded-full border border-amber-400/30 bg-amber-400/10">
               Live private room
             </span>
+            {canBroadcastCodeChanges && (
+              <button
+                type="button"
+                onClick={handleReturnToTeachingCode}
+                className="px-2.5 py-1 rounded-md border border-cyan-400/30 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/25 transition-colors whitespace-nowrap"
+              >
+                Return to Teaching Code
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1749,6 +1933,7 @@ export default function Classroom() {
               onCursorChange={handleCursorChange}
               onRun={handleRun}
               onSubmit={handleSubmit}
+              onReset={handleResetCode}
               isRunning={isRunning || interactiveSessionActive}
               readOnly={!canEditCode || (!canBroadcastCodeChanges && codeViewMode === 'shared')}
               ownerLabel={codeOwnerLabel}

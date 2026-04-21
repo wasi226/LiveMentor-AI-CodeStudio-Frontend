@@ -5,6 +5,7 @@
  */
 
 import { getAuthToken } from '@/lib/authStorage';
+import { API_BASE_URL } from '@/lib/apiBaseUrl';
 
 // Performance categories and thresholds
 export const PERFORMANCE_CATEGORIES = {
@@ -26,8 +27,6 @@ export const PROGRAMMING_CONCEPTS = {
   CODE_ORGANIZATION: 'code_organization',
   PROBLEM_SOLVING: 'problem_solving'
 };
-
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
 const normalizeTimestamp = (record) => {
   const raw =
