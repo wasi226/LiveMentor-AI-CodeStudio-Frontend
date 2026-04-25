@@ -57,6 +57,47 @@ const parseApiResponse = async (response) => {
   return data;
 };
 
+const deriveGradeFromScore = (score) => {
+  if (score >= 90) return 'A+';
+  if (score >= 80) return 'A';
+  if (score >= 70) return 'B';
+  if (score >= 60) return 'C';
+  if (score >= 40) return 'D';
+  return 'F';
+};
+
+const deriveCategoryFromScore = (score) => {
+  if (score >= 75) return 'strong';
+  if (score >= 40) return 'average';
+  return 'weak';
+};
+
+const getSubmissionGrade = (submission) => {
+  const grade = submission?.metadata?.grade;
+  if (typeof grade === 'string' && grade.trim()) {
+    return grade.trim().toUpperCase();
+  }
+
+  const score = Number(submission?.score) || 0;
+  return deriveGradeFromScore(score);
+};
+
+const getSubmissionCategory = (submission) => {
+  const category = String(submission?.metadata?.performance_category || '').toLowerCase();
+  if (category === 'strong' || category === 'average' || category === 'weak') {
+    return category;
+  }
+
+  const score = Number(submission?.score) || 0;
+  return deriveCategoryFromScore(score);
+};
+
+const categoryBadgeClass = {
+  strong: 'text-emerald-300 bg-emerald-500/15 border border-emerald-500/30',
+  average: 'text-amber-300 bg-amber-500/15 border border-amber-500/30',
+  weak: 'text-rose-300 bg-rose-500/15 border border-rose-500/30'
+};
+
 export default function StudentDashboard() {
   const [joinCode, setJoinCode] = useState('');
   const [joinDialogOpen, setJoinDialogOpen] = useState(false);
@@ -142,10 +183,33 @@ export default function StudentDashboard() {
     retry: false,
   });
 
-  const { data: submissions = [] } = useQuery({
-    queryKey: ['studentSubmissions', user?.email],
+  const { data: submissionSummary = [] } = useQuery({
+    queryKey: ['studentSubmissionSummary', user?.email],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE_URL}/api/submissions?limit=200&sort=desc&sortBy=createdAt`, {
+      const response = await fetch(`${API_BASE_URL}/api/submissions?limit=200&sort=desc&sortBy=createdAt&latest_per_assignment=true`, {
+        headers: getAuthHeaders()
+      });
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      return (payload.submissions || []).map(normalizeSubmission);
+    },
+    enabled: !!user,
+    retry: false,
+    refetchInterval: 15000,
+  });
+
+  const { data: recentSubmissions = [] } = useQuery({
+    queryKey: ['studentRecentSubmissions', user?.email],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE_URL}/api/submissions?limit=50&sort=desc&sortBy=createdAt&active_only=true`, {
         headers: getAuthHeaders()
       });
 
@@ -253,7 +317,7 @@ export default function StudentDashboard() {
   const joinMutation = useMutation({
     mutationFn: async (code) => {
       setJoinError('');
-      const normalizedCode = String(code || '').trim().replace(/\s+/g, '').toUpperCase();
+      const normalizedCode = String(code || '').trim().replaceAll(/\s+/g, '').toUpperCase();
 
       const response = await fetch(`${API_BASE_URL}/api/classrooms/join`, {
         method: 'POST',
@@ -279,11 +343,11 @@ export default function StudentDashboard() {
     onError: (err) => setJoinError(err.message),
   });
 
-  const avgScore = submissions.length > 0
-    ? Math.round(submissions.reduce((sum, s) => sum + (s.score || 0), 0) / submissions.length)
+  const avgScore = submissionSummary.length > 0
+    ? Math.round(submissionSummary.reduce((sum, s) => sum + (s.score || 0), 0) / submissionSummary.length)
     : 0;
 
-  const gradedCount = submissions.filter(s => s.status === 'graded').length;
+  const gradedCount = submissionSummary.filter(s => s.status === 'graded').length;
   const hasClassrooms = classrooms.length > 0;
   const displayName = user?.full_name || 'Student Dashboard';
   const title = user?.rollNumber ? `${displayName} (${user.rollNumber})` : displayName;
@@ -335,7 +399,7 @@ export default function StudentDashboard() {
 
   const submittedAssignmentIds = useMemo(() => {
     const ids = new Set();
-    submissions.forEach((submission) => {
+    submissionSummary.forEach((submission) => {
       if (!isSubmissionFinalized(submission)) {
         return;
       }
@@ -346,7 +410,35 @@ export default function StudentDashboard() {
       }
     });
     return ids;
-  }, [submissions]);
+  }, [submissionSummary]);
+
+  const latestSubmissionByAssignmentId = useMemo(() => {
+    const map = new Map();
+
+    submissionSummary.forEach((submission) => {
+      if (!isSubmissionFinalized(submission)) {
+        return;
+      }
+
+      const assignmentId = submission?.assignment_id;
+      if (!assignmentId) {
+        return;
+      }
+
+      const key = String(assignmentId);
+      const current = map.get(key);
+      const submissionTimestamp = new Date(submission.submitted_at || submission.created_date || submission.updated_date || 0).getTime();
+      const currentTimestamp = current
+        ? new Date(current.submitted_at || current.created_date || current.updated_date || 0).getTime()
+        : -1;
+
+      if (!current || submissionTimestamp >= currentTimestamp) {
+        map.set(key, submission);
+      }
+    });
+
+    return map;
+  }, [submissionSummary]);
 
   const selectedPreviewClassroom = useMemo(
     () => classrooms.find((classroom) => String(classroom.id) === String(selectedPreviewClassroomId)) || null,
@@ -419,7 +511,7 @@ export default function StudentDashboard() {
                     <input
                       placeholder="e.g. DSA101"
                       value={joinCode}
-                      onChange={(e) => { setJoinCode(e.target.value.toUpperCase().replace(/\s+/g, '')); setJoinError(''); }}
+                      onChange={(e) => { setJoinCode(e.target.value.toUpperCase().replaceAll(/\s+/g, '')); setJoinError(''); }}
                       onKeyDown={(e) => e.key === 'Enter' && joinCode.trim() && joinMutation.mutate(joinCode)}
                       className="w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white text-[13px] font-mono placeholder:text-slate-600 outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-colors"
                     />
@@ -454,7 +546,7 @@ export default function StudentDashboard() {
           <StatCard title="Classrooms" value={classrooms.length} icon={BookOpen} color="indigo" delay={0} subtitle="Enrolled" />
           <StatCard title="Assignments" value={assignments.length} icon={FileCode} color="violet" delay={0.05} subtitle="Active" />
           <StatCard title="Avg Score" value={avgScore > 0 ? `${avgScore}%` : '—'} icon={TrendingUp} color="emerald" delay={0.1} subtitle="Across submissions" trend={avgScore >= 70 ? 'up' : undefined} />
-          <StatCard title="Submissions" value={submissions.length} icon={Activity} color="amber" delay={0.15} subtitle={`${gradedCount} graded`} />
+          <StatCard title="Submissions" value={submissionSummary.length} icon={Activity} color="amber" delay={0.15} subtitle={`${gradedCount} graded, auto-archived after 48h`} />
         </div>
 
         <div className="grid lg:grid-cols-3 gap-5">
@@ -479,6 +571,9 @@ export default function StudentDashboard() {
                 <div className="grid sm:grid-cols-2 gap-2.5">
                   {assignments.slice(0, 4).map((a, i) => {
                     const isSubmitted = submittedAssignmentIds.has(String(a.id));
+                    const latestSubmission = latestSubmissionByAssignmentId.get(String(a.id));
+                    const submissionGrade = latestSubmission ? getSubmissionGrade(latestSubmission) : null;
+                    const submissionCategory = latestSubmission ? getSubmissionCategory(latestSubmission) : null;
 
                     return (
                     <div
@@ -495,8 +590,20 @@ export default function StudentDashboard() {
                           <p className="text-[11px] text-slate-600 mt-0.5 line-clamp-1">{a.description || 'No description'}</p>
 
                           {isSubmitted ? (
-                            <div className="flex items-center gap-1.5 mt-2.5 text-[12px] font-bold px-2.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                              Assignment Submitted
+                            <div className="flex items-center justify-between gap-2 mt-2.5">
+                              <div className="text-[12px] font-bold px-2.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                Assignment Submitted
+                              </div>
+                              {latestSubmission && (
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
+                                    {submissionGrade}
+                                  </span>
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${categoryBadgeClass[submissionCategory]}`}>
+                                    {submissionCategory}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           ) : a.due_date && (
                             <div className={`flex items-center gap-1.5 mt-2.5 text-[12px] font-bold px-2.5 py-1.5 rounded-md ${moment(a.due_date).isBefore(moment()) ? 'bg-red-500/20 text-red-400 border border-red-500/30' : moment(a.due_date).diff(moment(), 'days') <= 2 ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'bg-slate-800/40 text-slate-400 border border-slate-700/40'}`}>
@@ -594,32 +701,48 @@ export default function StudentDashboard() {
                 <h2 className="text-[14px] font-semibold text-white">Recent Activity</h2>
                 <Clock style={{ width: 13, height: 13 }} className="text-slate-600" />
               </div>
+              <p className="text-[10px] text-slate-600 mb-2">Recent submissions stay here for 48 hours; older attempts move into your report history.</p>
               <div className="rounded-xl border border-slate-800/60 bg-slate-900/20 overflow-hidden divide-y divide-slate-800/40">
-                {submissions.length > 0 ? submissions.slice(0, 5).map((s, i) => (
-                  <motion.div
-                    key={s.id}
-                    initial={{ opacity: 0, x: 8 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: i * 0.07 }}
-                    className="flex items-center gap-3 p-3"
-                  >
-                    <div className={`w-1.5 h-6 rounded-full flex-shrink-0 ${getSubmissionAccentClass(s)}`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[12px] text-slate-300 font-medium truncate">
-                        {assignmentTitleById.get(String(s.assignment_id || '')) || 'Assignment Submission'}
-                      </p>
-                      <p className="text-[12px] text-slate-300 font-medium truncate">
-                        {classroomNameById.get(String(s.classroom_id || '')) || 'Classroom'} • {s.language?.charAt(0).toUpperCase() + s.language?.slice(1)}
-                      </p>
-                      <p className="text-[10px] text-slate-600 mt-0.5">{moment(s.submitted_at || s.created_date).fromNow()}</p>
-                    </div>
-                    {s.score !== undefined && s.score !== null && (
-                      <span className={`text-[12px] font-bold tabular-nums ${s.score >= 70 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {s.score}%
-                      </span>
-                    )}
-                  </motion.div>
-                )) : (
+                {recentSubmissions.length > 0 ? recentSubmissions.slice(0, 5).map((s, i) => {
+                  const grade = getSubmissionGrade(s);
+                  const category = getSubmissionCategory(s);
+
+                  return (
+                    <motion.div
+                      key={s.id}
+                      initial={{ opacity: 0, x: 8 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.07 }}
+                      className="flex items-center gap-3 p-3"
+                    >
+                      <div className={`w-1.5 h-6 rounded-full flex-shrink-0 ${getSubmissionAccentClass(s)}`} />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[12px] text-slate-300 font-medium truncate">
+                          {assignmentTitleById.get(String(s.assignment_id || '')) || 'Assignment Submission'}
+                        </p>
+                        <p className="text-[12px] text-slate-300 font-medium truncate">
+                          {classroomNameById.get(String(s.classroom_id || '')) || 'Classroom'} • {s.language?.charAt(0).toUpperCase() + s.language?.slice(1)}
+                        </p>
+                        <p className="text-[10px] text-slate-600 mt-0.5">{moment(s.submitted_at || s.created_date).fromNow()}</p>
+                      </div>
+                      <div className="flex flex-col items-end gap-1">
+                        {s.score !== undefined && s.score !== null && (
+                          <span className={`text-[12px] font-bold tabular-nums ${s.score >= 70 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                            {s.score}%
+                          </span>
+                        )}
+                        <div className="flex items-center gap-1">
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
+                            {grade}
+                          </span>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${categoryBadgeClass[category]}`}>
+                            {category}
+                          </span>
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                }) : (
                   <div className="p-6 text-center">
                     <Activity style={{ width: 20, height: 20 }} className="text-slate-800 mx-auto mb-2" />
                     <p className="text-[11px] text-slate-600">No activity yet</p>

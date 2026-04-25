@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import PropTypes from 'prop-types';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { Plus, BookOpen, Users, BarChart3, AlertTriangle, Copy, Check, Hash, TrendingUp, LogOut, Activity, Eye, Code2, XCircle, LayoutGrid, FileCode } from 'lucide-react';
+import { Plus, BookOpen, Users, BarChart3, AlertTriangle, Copy, Check, Hash, TrendingUp, LogOut, Activity, Eye, Code2, XCircle, LayoutGrid, FileCode, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
@@ -19,6 +19,8 @@ import moment from 'moment';
 
 const SOCKET_IO_PATH = import.meta.env.VITE_SOCKET_IO_PATH || '/socket.io';
 const LIVE_CODE_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
+const INITIAL_VISIBLE_CLASSROOMS = 6;
+const INITIAL_VISIBLE_ASSIGNMENTS = 5;
 
 const normalizeClassroom = (classroom) => ({
   ...classroom,
@@ -227,6 +229,45 @@ const normalizeTestCases = (testCases = []) => {
   }));
 };
 
+const deriveGradeFromScore = (score) => {
+  if (score >= 90) return 'A+';
+  if (score >= 80) return 'A';
+  if (score >= 70) return 'B';
+  if (score >= 60) return 'C';
+  if (score >= 40) return 'D';
+  return 'F';
+};
+
+const deriveCategoryFromScore = (score) => {
+  if (score >= 75) return 'strong';
+  if (score >= 40) return 'average';
+  return 'weak';
+};
+
+const getSubmissionGrade = (submission) => {
+  const grade = submission?.metadata?.grade;
+  if (typeof grade === 'string' && grade.trim()) {
+    return grade.trim().toUpperCase();
+  }
+
+  return deriveGradeFromScore(Number(submission?.score) || 0);
+};
+
+const getSubmissionCategory = (submission) => {
+  const category = String(submission?.metadata?.performance_category || '').toLowerCase();
+  if (category === 'strong' || category === 'average' || category === 'weak') {
+    return category;
+  }
+
+  return deriveCategoryFromScore(Number(submission?.score) || 0);
+};
+
+const categoryBadgeClass = {
+  strong: 'text-emerald-300 bg-emerald-500/15 border border-emerald-500/30',
+  average: 'text-amber-300 bg-amber-500/15 border border-amber-500/30',
+  weak: 'text-rose-300 bg-rose-500/15 border border-rose-500/30'
+};
+
 // eslint-disable-next-line sonarjs/cognitive-complexity
 export default function FacultyDashboard() {
   const dashboardParams = new URLSearchParams(globalThis.location.search);
@@ -244,6 +285,8 @@ export default function FacultyDashboard() {
   const [liveEditorStudentEmail, setLiveEditorStudentEmail] = useState('');
   const [liveEditorCode, setLiveEditorCode] = useState('');
   const [liveEditorLanguage, setLiveEditorLanguage] = useState('javascript');
+  const [showAllClassrooms, setShowAllClassrooms] = useState(false);
+  const [showAllAssignments, setShowAllAssignments] = useState(false);
   const [activityFilters, setActivityFilters] = useState({
     onlyErrors: false,
     onlyActive: false,
@@ -379,6 +422,16 @@ export default function FacultyDashboard() {
     () => classrooms.find((classroom) => classroom.id === selectedClassroomId) || null,
     [classrooms, selectedClassroomId]
   );
+
+  const selectedClassroomAssignments = useMemo(() => {
+    return allAssignments
+      .filter((assignment) => String(assignment.classroom_id) === String(selectedClassroom?.id || ''))
+      .sort((a, b) => new Date(b.createdAt || b.created_date || 0) - new Date(a.createdAt || a.created_date || 0));
+  }, [allAssignments, selectedClassroom?.id]);
+
+  useEffect(() => {
+    setShowAllAssignments(false);
+  }, [selectedClassroomId]);
 
   const assignmentTitleById = useMemo(() => {
     const map = new Map();
@@ -924,6 +977,14 @@ export default function FacultyDashboard() {
     : 0;
   const hasClassrooms = classrooms.length > 0;
   const classroomLabel = classrooms.length === 1 ? 'classroom' : 'classrooms';
+  const visibleClassrooms = showAllClassrooms
+    ? classrooms
+    : classrooms.slice(0, INITIAL_VISIBLE_CLASSROOMS);
+  const hasHiddenClassrooms = classrooms.length > INITIAL_VISIBLE_CLASSROOMS;
+  const visibleAssignments = showAllAssignments
+    ? selectedClassroomAssignments
+    : selectedClassroomAssignments.slice(0, INITIAL_VISIBLE_ASSIGNMENTS);
+  const hasHiddenAssignments = selectedClassroomAssignments.length > INITIAL_VISIBLE_ASSIGNMENTS;
   const selectedClassroomStudents = useMemo(() => {
     if (!selectedClassroom) {
       return [];
@@ -1078,8 +1139,45 @@ export default function FacultyDashboard() {
     );
   } else if (hasClassrooms) {
     classroomsContent = (
-      <div className="grid sm:grid-cols-2 gap-3">
-        {classrooms.map((c, i) => <ClassroomCard key={c.id} classroom={c} delay={i * 0.07} />)}
+      <div className="space-y-3">
+        <div className="grid sm:grid-cols-2 gap-3">
+          {visibleClassrooms.map((c, i) => (
+            <div key={c.id} className="relative">
+              <ClassroomCard classroom={c} delay={i * 0.07} />
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const shouldDelete = globalThis.confirm(`Delete classroom "${c.name}"? This cannot be undone.`);
+                  if (!shouldDelete) {
+                    return;
+                  }
+                  deleteClassroomMutation.mutate(c);
+                }}
+                className="absolute top-2 right-2 h-7 w-7 rounded-md border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors flex items-center justify-center"
+                title="Delete classroom"
+              >
+                <Trash2 style={{ width: 12, height: 12 }} />
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {hasHiddenClassrooms && (
+          <div className="flex justify-center">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowAllClassrooms((previous) => !previous)}
+              className="h-8 text-[11px] border-slate-700 text-slate-300 hover:bg-slate-800"
+            >
+              {showAllClassrooms
+                ? 'Show fewer classrooms'
+                : `Show all classrooms (${classrooms.length})`}
+            </Button>
+          </div>
+        )}
       </div>
     );
   } else {
@@ -1167,6 +1265,55 @@ export default function FacultyDashboard() {
     },
   });
 
+  const deleteClassroomMutation = useMutation({
+    mutationFn: async (classroom) => {
+      const response = await fetch(`${API_BASE_URL}/api/classrooms/${classroom.id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || payload.message || 'Failed to delete classroom');
+      }
+
+      return payload;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['facultyClassrooms'] });
+      queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
+      queryClient.invalidateQueries({ queryKey: ['facultySubmissions'] });
+    }
+  });
+
+  const deleteAssignmentMutation = useMutation({
+    mutationFn: async (assignmentId) => {
+      const response = await fetch(`${API_BASE_URL}/api/assignments/${assignmentId}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+
+      if (await handleUnauthorizedResponse(response, 'Your session is invalid. Please sign in again.')) {
+        throw new Error('Your session is invalid. Please sign in again.');
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || payload.message || 'Failed to delete assignment');
+      }
+
+      return payload;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
+      queryClient.invalidateQueries({ queryKey: ['facultySubmissions'] });
+    }
+  });
+
   const assignmentHasValidTestCases = !assignmentForm.with_test_cases
     || assignmentForm.test_cases.some((testCase) => String(testCase.expectedOutput || '').trim().length > 0);
 
@@ -1194,7 +1341,6 @@ export default function FacultyDashboard() {
 
   const langColors = {
     javascript: 'text-yellow-400', python: 'text-blue-400', java: 'text-orange-400',
-    cpp: 'text-cyan-400', typescript: 'text-sky-400', go: 'text-teal-400', rust: 'text-rose-400',
   };
 
   return (
@@ -1249,7 +1395,7 @@ export default function FacultyDashboard() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent className="bg-slate-900 border-slate-700">
-                      {['javascript', 'python', 'java', 'cpp', 'typescript', 'go', 'rust'].map(l => (
+                      {['javascript', 'python', 'java'].map(l => (
                         <SelectItem key={l} value={l} className="text-slate-200 focus:bg-slate-800 focus:text-white text-[13px]">{l}</SelectItem>
                       ))}
                     </SelectContent>
@@ -1311,7 +1457,7 @@ export default function FacultyDashboard() {
                   <h3 className="text-[12px] font-semibold text-slate-400 uppercase tracking-wider">Invite Codes</h3>
                 </div>
                 <div className="divide-y divide-slate-800/40">
-                  {classrooms.map(c => (
+                  {visibleClassrooms.map(c => (
                     <div key={c.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-3 hover:bg-slate-800/20 transition-colors">
                       <div className="flex items-center gap-3">
                         <div className="w-7 h-7 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center">
@@ -1348,7 +1494,7 @@ export default function FacultyDashboard() {
                   <h3 className="text-[12px] font-semibold text-slate-400 uppercase tracking-wider">Joined Students</h3>
                 </div>
                 <div className="divide-y divide-slate-800/40">
-                  {classrooms.map((classroom) => (
+                  {visibleClassrooms.map((classroom) => (
                     <div key={`${classroom.id}-students`} className="px-4 py-3">
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-[12px] font-medium text-slate-300">{classroom.name}</p>
@@ -1516,11 +1662,9 @@ export default function FacultyDashboard() {
                     </Dialog>
                   )}
 
-                  {selectedClassroom && allAssignments.some(a => String(a.classroom_id) === String(selectedClassroom.id)) ? (
+                  {selectedClassroom && selectedClassroomAssignments.length > 0 ? (
                     <div className="space-y-2 max-h-96 overflow-auto">
-                      {allAssignments
-                        .filter(a => String(a.classroom_id) === String(selectedClassroom.id))
-                        .sort((a, b) => new Date(b.createdAt || b.created_date) - new Date(a.createdAt || a.created_date))
+                      {visibleAssignments
                         .map((assignment) => {
                           const assignmentId = assignment.id || assignment._id;
                           const submissionCount = getSubmissionCountForAssignment(assignmentId);
@@ -1559,28 +1703,63 @@ export default function FacultyDashboard() {
                                     </div>
                                   </div>
                                   {showAssignButton ? (
-                                    <Button
-                                      size="sm"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/assign-to-class`, {
-                                          method: 'POST',
-                                          headers: getAuthHeaders(),
-                                          body: JSON.stringify({})
-                                        })
-                                          .then(r => r.json())
-                                          .then(() => {
-                                            queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
+                                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                                      <Button
+                                        size="sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          fetch(`${API_BASE_URL}/api/assignments/${assignmentId}/assign-to-class`, {
+                                            method: 'POST',
+                                            headers: getAuthHeaders(),
+                                            body: JSON.stringify({})
                                           })
-                                          .catch(err => console.error('Assignment error:', err));
-                                      }}
-                                      className="h-6 text-[10px] px-2 bg-emerald-600 hover:bg-emerald-500 flex-shrink-0"
-                                    >
-                                      Assign
-                                    </Button>
+                                            .then(r => r.json())
+                                            .then(() => {
+                                              queryClient.invalidateQueries({ queryKey: ['facultyAssignments'] });
+                                            })
+                                            .catch(err => console.error('Assignment error:', err));
+                                        }}
+                                        className="h-6 text-[10px] px-2 bg-emerald-600 hover:bg-emerald-500"
+                                      >
+                                        Assign
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const shouldDelete = globalThis.confirm(`Delete assignment "${assignment.title}"?`);
+                                          if (!shouldDelete) {
+                                            return;
+                                          }
+                                          deleteAssignmentMutation.mutate(assignmentId);
+                                        }}
+                                        className="h-6 w-6 p-0 border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                                        title="Delete assignment"
+                                      >
+                                        <Trash2 style={{ width: 11, height: 11 }} />
+                                      </Button>
+                                    </div>
                                   ) : (
-                                    <div className="text-[11px] text-slate-500 flex-shrink-0">
-                                      {isExpanded ? '▼' : '▶'}
+                                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const shouldDelete = globalThis.confirm(`Delete assignment "${assignment.title}"?`);
+                                          if (!shouldDelete) {
+                                            return;
+                                          }
+                                          deleteAssignmentMutation.mutate(assignmentId);
+                                        }}
+                                        className="h-6 w-6 rounded-md border border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 flex items-center justify-center"
+                                        title="Delete assignment"
+                                      >
+                                        <Trash2 style={{ width: 11, height: 11 }} />
+                                      </button>
+                                      <div className="text-[11px] text-slate-500">
+                                        {isExpanded ? '▼' : '▶'}
+                                      </div>
                                     </div>
                                   )}
                                 </div>
@@ -1591,6 +1770,8 @@ export default function FacultyDashboard() {
                                   <p className="text-[10px] text-slate-400 px-1 py-1">Who Submitted:</p>
                                   {submissions.map((submission) => {
                                     const score = submission.score || 0;
+                                    const grade = getSubmissionGrade(submission);
+                                    const category = getSubmissionCategory(submission);
                                     const scoreClass = score >= 70
                                       ? 'text-green-300 bg-green-500/15'
                                       : 'text-yellow-300 bg-yellow-500/15';
@@ -1606,9 +1787,17 @@ export default function FacultyDashboard() {
                                           <p className="text-[10px] font-semibold text-slate-200 truncate">{submission.student_email}</p>
                                           <p className="text-[9px] text-slate-500">{submission.language} · {moment(submission.submitted_at || submission.created_at || submission.created_date).fromNow()}</p>
                                         </div>
-                                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold flex-shrink-0 ${scoreClass}`}>
-                                          {score}%
-                                        </span>
+                                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${scoreClass}`}>
+                                            {score}%
+                                          </span>
+                                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
+                                            {grade}
+                                          </span>
+                                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${categoryBadgeClass[category]}`}>
+                                            {category}
+                                          </span>
+                                        </div>
                                       </div>
                                     </button>
                                     );
@@ -1624,6 +1813,21 @@ export default function FacultyDashboard() {
                             </div>
                           );
                         })}
+
+                      {hasHiddenAssignments && (
+                        <div className="flex justify-center pt-1">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setShowAllAssignments((previous) => !previous)}
+                            className="h-7 text-[10px] border-slate-700 text-slate-300 hover:bg-slate-800"
+                          >
+                            {showAllAssignments
+                              ? 'Show fewer assignments'
+                              : `Show all assignments (${selectedClassroomAssignments.length})`}
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <p className="text-[11px] text-slate-600 text-center py-4">No assignments yet. Create one to get started!</p>
@@ -1663,6 +1867,9 @@ export default function FacultyDashboard() {
                       </div>
                       <span className={`text-[11px] font-bold tabular-nums w-8 text-right ${(s.score || 0) >= 70 ? 'text-emerald-400' : 'text-amber-400'}`}>
                         {s.score || 0}%
+                      </span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
+                        {getSubmissionGrade(s)}
                       </span>
                     </div>
                   </motion.div>
@@ -1723,6 +1930,8 @@ export default function FacultyDashboard() {
                     const assignmentId = submission.assignment_id;
                     const assignmentTitle = assignmentTitleById.get(String(assignmentId)) || 'Assignment';
                     const submittedAt = submission.submitted_at || submission.created_at || submission.created_date;
+                    const submissionGrade = getSubmissionGrade(submission);
+                    const submissionCategory = getSubmissionCategory(submission);
 
                     return (
                       <button
@@ -1733,7 +1942,15 @@ export default function FacultyDashboard() {
                         <p className="text-[11px] font-semibold text-slate-200 truncate">{submission.student_email}</p>
                         <p className="text-[10px] text-slate-500 truncate mt-0.5">{assignmentTitle}</p>
                         <div className="flex items-center justify-between mt-1.5">
-                          <span className="text-[10px] text-slate-400">{submission.language}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-slate-400">{submission.language}</span>
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
+                              {submissionGrade}
+                            </span>
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${categoryBadgeClass[submissionCategory]}`}>
+                              {submissionCategory}
+                            </span>
+                          </div>
                           <span className="text-[10px] text-slate-600">{submittedAt ? moment(submittedAt).format('MMM D, h:mm A') : 'N/A'}</span>
                         </div>
                       </button>
@@ -1773,6 +1990,14 @@ export default function FacultyDashboard() {
                         <div className="rounded-lg border border-slate-800/60 bg-slate-900/40 px-2.5 py-2">
                           <p className="text-slate-500">Status / Score</p>
                           <p className="text-slate-200 mt-0.5">{selectedSubmission.status || 'draft'} / {selectedSubmission.score ?? 0}%</p>
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold">
+                              Grade: {getSubmissionGrade(selectedSubmission)}
+                            </span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${categoryBadgeClass[getSubmissionCategory(selectedSubmission)]}`}>
+                              {getSubmissionCategory(selectedSubmission)}
+                            </span>
+                          </div>
                         </div>
                       </div>
 

@@ -11,12 +11,7 @@ const API_BASE_URL = resolveApiBaseUrl();
 const LANGUAGE_MAP = {
   javascript: 'JavaScript',
   python: 'Python',
-  java: 'Java',
-  cpp: 'C++',
-  c: 'C',
-  typescript: 'TypeScript',
-  go: 'Go',
-  rust: 'Rust'
+  java: 'Java'
 };
 
 function resolveApiBaseUrl() {

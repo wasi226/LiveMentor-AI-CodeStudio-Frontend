@@ -13,21 +13,13 @@ import StepByStepVisualizer from './StepByStepVisualizer';
 const languages = [
   { value: 'javascript', label: 'JavaScript', ext: 'js',   color: '#facc15' },
   { value: 'python',     label: 'Python',     ext: 'py',   color: '#60a5fa' },
-  { value: 'java',       label: 'Java',       ext: 'java', color: '#fb923c' },
-  { value: 'cpp',        label: 'C++',        ext: 'cpp',  color: '#22d3ee' },
-  { value: 'typescript', label: 'TypeScript', ext: 'ts',   color: '#38bdf8' },
-  { value: 'go',         label: 'Go',         ext: 'go',   color: '#2dd4bf' },
-  { value: 'rust',       label: 'Rust',       ext: 'rs',   color: '#fb7185' },
+  { value: 'java',       label: 'Java',       ext: 'java', color: '#fb923c' }
 ];
 
 export const DEFAULT_CODE_SNIPPETS = {
   javascript: `// Welcome to CodeClass.ai\nfunction solution(nums) {\n  // Write your solution here\n  \n}\n\nconsole.log(solution([1, 2, 3]));`,
   python:     `# Welcome to CodeClass.ai\ndef solution(nums):\n    # Write your solution here\n    pass\n\nprint(solution([1, 2, 3]))`,
-  java:       `// Welcome to CodeClass.ai\npublic class Solution {\n    public static void main(String[] args) {\n        // Write your solution here\n    }\n}`,
-  cpp:        `// Welcome to CodeClass.ai\n#include <iostream>\n#include <vector>\nusing namespace std;\n\nint main() {\n    // Write your solution here\n    return 0;\n}`,
-  typescript: `// Welcome to CodeClass.ai\nfunction solution(nums: number[]): number {\n  // Write your solution here\n  return 0;\n}\n\nconsole.log(solution([1, 2, 3]));`,
-  go:         `// Welcome to CodeClass.ai\npackage main\n\nimport "fmt"\n\nfunc main() {\n    // Write your solution here\n    fmt.Println("Hello")\n}`,
-  rust:       `// Welcome to CodeClass.ai\nfn main() {\n    // Write your solution here\n    println!("Hello, world!");\n}`,
+  java:       `// Welcome to CodeClass.ai\npublic class Solution {\n    public static void main(String[] args) {\n        // Write your solution here\n    }\n}`
 };
 
 export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, onReset, isRunning, readOnly = false, ownerLabel = '', errorLineNumbers = [], submitDisabled = false, submitLabel = 'Submit' }) {

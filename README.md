@@ -1,5 +1,7 @@
 # LiveMentor AI CodeStudio Frontend
 
+![AI Pair Programmer](https://img.shields.io/badge/AI%20Pair%20Programmer-Implemented-22c55e)
+
 Frontend application for LiveMentor, built with React and Vite.
 
 This app provides role-based dashboards for students and faculty, classroom participation workflows, and a coding-first UI connected to the backend API.
@@ -12,6 +14,20 @@ This app provides role-based dashboards for students and faculty, classroom part
 - Classroom join via invite code
 - React Query server state management
 - Component-driven UI with Tailwind and Radix
+- AI Pair Programmer panel with explain, review, and smart completion actions
+
+## AI Pair Programmer Status
+
+The AI Pair Programmer features documented in the project are now implemented in the classroom AI panel.
+
+- AI-based code explanation
+- Bug detection and optimization suggestions
+- Smart code completion and logic recommendations
+
+Frontend integration points:
+
+- src/components/classroom/AIAssistant.jsx
+- src/services/aiPairProgrammer.js
 
 ## Tech Stack
 

@@ -7,11 +7,7 @@ import moment from 'moment';
 const langConfig = {
   javascript: { color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/20', dot: '#facc15' },
   python:     { color: 'text-blue-400',   bg: 'bg-blue-500/10',   border: 'border-blue-500/20',   dot: '#60a5fa' },
-  java:       { color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/20', dot: '#fb923c' },
-  cpp:        { color: 'text-cyan-400',   bg: 'bg-cyan-500/10',   border: 'border-cyan-500/20',   dot: '#22d3ee' },
-  typescript: { color: 'text-sky-400',    bg: 'bg-sky-500/10',    border: 'border-sky-500/20',    dot: '#38bdf8' },
-  go:         { color: 'text-teal-400',   bg: 'bg-teal-500/10',   border: 'border-teal-500/20',   dot: '#2dd4bf' },
-  rust:       { color: 'text-rose-400',   bg: 'bg-rose-500/10',   border: 'border-rose-500/20',   dot: '#fb7185' },
+  java:       { color: 'text-orange-400', bg: 'bg-orange-500/10', border: 'border-orange-500/20', dot: '#fb923c' }
 };
 
 const avatarGradients = [

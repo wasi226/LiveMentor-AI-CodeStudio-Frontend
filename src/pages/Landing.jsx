@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, useScroll, useTransform, AnimatePresence } from 'framer-motion';
 import {
@@ -73,10 +73,9 @@ function FloatingOrb({ style }) {
 export default function Landing() {
   const [activeTestimonial, setActiveTestimonial] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const heroRef = useRef(null);
-  const { scrollYProgress } = useScroll({ target: heroRef, offset: ['start start', 'end start'] });
-  const heroY = useTransform(scrollYProgress, [0, 1], ['0%', '20%']);
-  const heroOpacity = useTransform(scrollYProgress, [0, 0.7], [1, 0]);
+  const { scrollY } = useScroll();
+  const heroY = useTransform(scrollY, [0, 700], ['0%', '20%']);
+  const heroOpacity = useTransform(scrollY, [0, 450], [1, 0]);
 
   const navItems = ['Features', 'Preview', 'Testimonials'];
 
@@ -184,7 +183,7 @@ export default function Landing() {
       </nav>
 
       {/* ── HERO ── */}
-      <section ref={heroRef} className="relative min-h-screen flex items-center justify-center pt-16 overflow-hidden">
+      <section className="relative min-h-screen flex items-center justify-center pt-16 overflow-hidden">
         {/* Background layers */}
         <div className="absolute inset-0 pointer-events-none">
           {/* Deep glow orbs */}
