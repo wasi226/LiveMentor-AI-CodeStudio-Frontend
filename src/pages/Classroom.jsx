@@ -425,6 +425,7 @@ export default function Classroom() {
     isFacultyOrAdmin,
     returnTo
   }), [classroomId, assignmentIdFromUrl, isFacultyOrAdmin, returnTo]);
+  const isAssignmentOpen = Boolean(assignmentIdFromUrl);
 
   const [code, setCode] = useState(DEFAULT_CODE_SNIPPETS.javascript);
   const [language, setLanguage] = useState('javascript');
@@ -531,6 +532,24 @@ export default function Classroom() {
       return assignment?.id || assignment?._id || null;
     },
     enabled: Boolean(classroomId && user?.email),
+  });
+
+  const { data: assignmentDetails = null, isLoading: isAssignmentDetailsLoading } = useQuery({
+    queryKey: ['assignmentDetails', assignmentIdFromUrl],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE_URL}/api/assignments/${encodeURIComponent(assignmentIdFromUrl)}`,
+        { headers: getAuthHeaders() }
+      );
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      return payload?.assignment || null;
+    },
+    enabled: Boolean(assignmentIdFromUrl && user?.email),
   });
 
   const canBroadcastCodeChanges = useMemo(() => getCanBroadcastCodeChanges({ user, classroomFacultyEmail: classroom?.faculty_email }), [classroom?.faculty_email, user]);
@@ -1913,6 +1932,47 @@ export default function Classroom() {
           </motion.div>
         )}
       </div>
+
+      {isAssignmentOpen && (
+        <div className="border-b border-amber-500/25 bg-gradient-to-r from-amber-500/12 via-amber-500/8 to-slate-950 px-3 sm:px-4 py-3 flex-shrink-0">
+          <div className="max-w-7xl mx-auto flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-amber-200">Assignment Work</p>
+                <h2 className="text-sm sm:text-base font-semibold text-slate-100 mt-1 truncate">
+                  {assignmentDetails?.title || (isAssignmentDetailsLoading ? 'Loading assignment...' : 'Assignment details unavailable')}
+                </h2>
+              </div>
+              {assignmentDetails?.due_date && (
+                <div className="shrink-0 rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-[11px] font-medium text-amber-100">
+                  Submission deadline: {new Date(assignmentDetails.due_date).toLocaleString()}
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+              <div className="rounded-lg border border-slate-800/70 bg-slate-950/40 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 mb-1">Question</p>
+                <p className="text-[12px] sm:text-[13px] leading-5 text-slate-200 whitespace-pre-wrap">
+                  {assignmentDetails?.description || 'No assignment question was provided for this task.'}
+                </p>
+              </div>
+
+              {assignmentDetails?.due_date && (
+                <div className="rounded-lg border border-slate-800/70 bg-slate-950/40 px-3 py-2.5 min-w-[220px]">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 mb-1">Deadline</p>
+                  <p className="text-[12px] sm:text-[13px] font-medium text-slate-100">
+                    {new Date(assignmentDetails.due_date).toLocaleString()}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Submit before the deadline to have your work graded.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {facultyEditNotice.active && !canBroadcastCodeChanges && (
         <div className="border-b border-cyan-500/25 bg-cyan-500/10 px-3 sm:px-4 py-1.5 flex items-center justify-between gap-3">

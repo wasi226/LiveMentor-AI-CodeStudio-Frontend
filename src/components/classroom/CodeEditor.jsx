@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
 import React, { useState, useRef, useMemo } from 'react';
-import { Play, Send, Copy, RotateCcw, ChevronDown, Check, Loader2, Bug } from 'lucide-react';
+import { Play, Send, Copy, RotateCcw, ChevronDown, Check, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -8,7 +8,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import StepByStepVisualizer from './StepByStepVisualizer';
 
 const languages = [
   { value: 'javascript', label: 'JavaScript', ext: 'js',   color: '#facc15' },
@@ -17,14 +16,13 @@ const languages = [
 ];
 
 export const DEFAULT_CODE_SNIPPETS = {
-  javascript: `// Welcome to CodeClass.ai\nfunction solution(nums) {\n  // Write your solution here\n  \n}\n\nconsole.log(solution([1, 2, 3]));`,
-  python:     `# Welcome to CodeClass.ai\ndef solution(nums):\n    # Write your solution here\n    pass\n\nprint(solution([1, 2, 3]))`,
-  java:       `// Welcome to CodeClass.ai\npublic class Solution {\n    public static void main(String[] args) {\n        // Write your solution here\n    }\n}`
+  javascript: `// Welcome to liveMentor AI CodeStudio\nfunction solution(nums) {\n  // Write your solution here\n  \n}\n\nconsole.log(solution([1, 2, 3]));`,
+  python:     `# Welcome to liveMentor AI CodeStudio\ndef solution(nums):\n    # Write your solution here\n    pass\n\nprint(solution([1, 2, 3]))`,
+  java:       `// Welcome to liveMentor AI CodeStudio\npublic class Solution {\n    public static void main(String[] args) {\n        // Write your solution here\n    }\n}`
 };
 
 export default function CodeEditor({ language, onLanguageChange, code, onCodeChange, onCursorChange, onRun, onSubmit, onReset, isRunning, readOnly = false, ownerLabel = '', errorLineNumbers = [], submitDisabled = false, submitLabel = 'Submit' }) {
   const [copied, setCopied] = useState(false);
-  const [showVisualizer, setShowVisualizer] = useState(false);
   const textareaRef = useRef(null);
   const currentLang = languages.find(l => l.value === language) || languages[0];
   const displayCode = typeof code === 'string'
@@ -229,14 +227,6 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
         </div>
         <div className="flex items-center gap-1.5 sm:gap-2 w-full sm:w-auto justify-end">
           <Button
-            onClick={() => setShowVisualizer(true)}
-            size="sm"
-            className="h-7 px-2 sm:px-3 bg-purple-600/90 hover:bg-purple-600 text-white text-[11px] font-semibold gap-1.5 shadow-sm"
-          >
-            <Bug style={{ width: 11, height: 11 }} />
-            <span className="hidden sm:inline">Debug</span>
-          </Button>
-          <Button
             onClick={onRun}
             disabled={isRunning}
             size="sm"
@@ -258,15 +248,6 @@ export default function CodeEditor({ language, onLanguageChange, code, onCodeCha
           </Button>
         </div>
       </div>
-
-      {/* Step-by-step visualizer */}
-      {showVisualizer && (
-        <StepByStepVisualizer 
-          code={displayCode}
-          language={language}
-          onClose={() => setShowVisualizer(false)}
-        />
-      )}
     </div>
   );
 }

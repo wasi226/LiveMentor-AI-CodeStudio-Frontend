@@ -42,7 +42,7 @@ const codeTokens = [
 ];
 
 const testimonials = [
-  { name: 'Dr. Sarah Chen',   role: 'CS Professor, MIT',        text: 'CodeClass.ai transformed how my 300-student class collaborates. The AI tutor reduced my office hours by 60%.', stars: 5 },
+  { name: 'Dr. Sarah Chen',   role: 'CS Professor, MIT',        text: 'liveMentor AI CodeStudio transformed how my 300-student class collaborates. The AI tutor reduced my office hours by 60%.', stars: 5 },
   { name: 'Alex Rodriguez',  role: 'Student, Stanford',         text: 'Getting instant AI feedback while coding feels like having a senior dev sitting next to me. My grades went from B to A.', stars: 5 },
   { name: 'Prof. James Park', role: 'Director, Coding Bootcamp', text: 'The analytics dashboard shows exactly which concepts students struggle with. Game-changer for curriculum design.', stars: 5 },
 ];
@@ -107,7 +107,7 @@ export default function Landing() {
             <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
               <Terminal style={{ width: 15, height: 15 }} className="text-white" />
             </div>
-            <span className="text-[14px] sm:text-[16px] font-black tracking-tight truncate">CodeClass<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400">.ai</span></span>
+            <span className="text-[14px] sm:text-[16px] font-black tracking-tight truncate">liveMentor<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400"> AI CodeStudio</span></span>
           </div>
 
           <div className="hidden md:flex items-center gap-8">
@@ -643,7 +643,7 @@ function fib(n) {
                 <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400">Smarter Today</span>
               </h2>
               <p className="text-slate-400 text-[16px] mb-10 max-w-md mx-auto leading-relaxed">
-                Join 10,000+ students and educators already using CodeClass.ai
+                Join 10,000+ students and educators already using liveMentor AI CodeStudio
               </p>
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
                 <Link to="/student-dashboard">
@@ -687,9 +687,9 @@ function fib(n) {
             <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
               <Terminal style={{ width: 13, height: 13 }} className="text-white" />
             </div>
-            <span className="font-black text-[14px] text-white">CodeClass<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400">.ai</span></span>
+            <span className="font-black text-[14px] text-white">liveMentor<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400"> AI CodeStudio</span></span>
           </div>
-          <p className="text-[11px] text-slate-700 font-medium">© 2026 CodeClass.ai · AI-Powered Collaborative Coding Education</p>
+          <p className="text-[11px] text-slate-700 font-medium">© 2026 liveMentor AI CodeStudio · AI-Powered Collaborative Coding Education</p>
           <div className="flex items-center gap-4">
             {[Globe, Github, Twitter].map((Icon, i) => (
               <a key={i} href="#" className="w-8 h-8 rounded-lg bg-white/4 border border-white/6 flex items-center justify-center text-slate-600 hover:text-slate-300 hover:bg-white/8 transition-all">
